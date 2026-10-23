@@ -70,7 +70,7 @@ def build(exe_path, ver, out_root):
 
 if __name__ == "__main__":
     exe = sys.argv[1]
-    ver = sys.argv[2] if len(sys.argv) > 2 else "0.0"
+    ver = sys.argv[2] if len(sys.argv) > 2 else (_version_from_module() or "0.0")
     out = sys.argv[3] if len(sys.argv) > 3 else os.path.dirname(os.path.abspath(exe))
     folder, zip_path, dst_exe = build(exe, ver, out)
     print("文件夹:", folder)

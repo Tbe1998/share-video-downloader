@@ -27,7 +27,7 @@ import webserver  # noqa: E402  （手机网页版，纯标准库）
 
 APP_NAME = "DouyinDownloader"
 APP_TITLE = "抖音无水印下载器"
-VERSION = "2.7"
+from version import VERSION  # noqa: E402  唯一版本来源（见 version.py）
 
 # ---------------- 配置 ----------------
 def app_dir():
@@ -1136,6 +1136,21 @@ def run_gui(test_hook=None):
     return rc
 
 
+def version_consistency():
+    """自检用：桌面版 / 手机网页版 / version.py 的版本必须一致"""
+    try:
+        import version as vmod
+        import webserver as ws
+        return {
+            "version.py": vmod.VERSION,
+            "app.py": VERSION,
+            "手机网页版": ws.DEFAULT_APP_VERSION,
+            "一致": vmod.VERSION == VERSION == ws.DEFAULT_APP_VERSION,
+        }
+    except Exception as ex:
+        return {"错误": str(ex), "一致": False}
+
+
 def run_selftest():
     """打包后自检：不联网，只验证运行库是否齐全。退出码 0=正常 3=缺件"""
     lines = []
@@ -1182,6 +1197,16 @@ def run_selftest():
     except Exception as e:
         ok = False
         say("WebSocket 客户端失败:", e)
+    try:
+        vc = version_consistency()
+        if vc.get("一致"):
+            say("版本一致性 OK:", vc.get("version.py", ""))
+        else:
+            ok = False
+            say("版本不一致（桌面版/手机版/version.py 必须相同）:", vc)
+    except Exception as e:
+        ok = False
+        say("版本一致性检查失败:", e)
     say("结论:", "正常" if ok else "存在缺件")
     try:
         with open(os.path.join(os.getcwd(), "douyin_selftest.txt"), "w", encoding="utf-8") as f:

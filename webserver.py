@@ -23,6 +23,11 @@ from urllib.parse import parse_qs, urlparse, quote
 import dycore
 import engine as eng
 
+try:                                   # 版本号唯一来源
+    from version import VERSION as DEFAULT_APP_VERSION
+except Exception:                      # 独立运行时的兜底
+    DEFAULT_APP_VERSION = "0.0.0"
+
 QUALITY_LABELS = [
     ("auto", "自动（最高可用）"),
     ("1080p", "1080P 超清"),
@@ -407,7 +412,7 @@ setTimeout(refreshLogin, 300);
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "DyWeb/1.0"
+    server_version = "DyWeb/" + DEFAULT_APP_VERSION
     hub = None          # 由 Server 注入
     token = ""
     version = ""
@@ -600,7 +605,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class WebServer:
-    def __init__(self, out_dir, port=8990, host="0.0.0.0", log=None, version="",
+    def __init__(self, out_dir, port=8990, host="0.0.0.0", log=None,
+                 version=DEFAULT_APP_VERSION,
                  headless=True, headless_flag=None, engine_getter=None,
                  login_opener=None, login_checker=None):
         self.hub = Hub(out_dir, log=log, headless=headless, headless_flag=headless_flag,
@@ -609,7 +615,7 @@ class WebServer:
         self.port = port
         self.host = host
         self.token = uuid.uuid4().hex[:6]
-        self.version = version
+        self.version = version or DEFAULT_APP_VERSION
         self.log = log or (lambda s: None)
         self.httpd = None
         self.thread = None

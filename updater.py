@@ -20,7 +20,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-REPO = "Tbe1998/douyin-downloader"
+try:                                    # 仓库名唯一来源
+    from version import REPO
+except Exception:
+    REPO = "Tbe1998/douyin-downloader"
 UA = "DouyinDownloader-Updater"
 GH_API_LATEST = "https://api.github.com/repos/%s/releases/latest" % REPO
 GH_RELEASES = "https://github.com/%s/releases/latest" % REPO
