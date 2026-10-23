@@ -254,17 +254,38 @@ class BrowserEngine:
                 self._write_marker()
                 return
             except EngineError as e:
-                # 上一次留下的浏览器进程占着 profile → 干掉它再试一次
-                m = self._read_marker()
-                pid = m.get("pid")
-                if attempt == 1 and pid and _pid_alive(pid):
-                    self.log("发现上次残留的浏览器进程（PID %s），先结束它再启动" % pid)
-                    _kill_pid(pid)
-                    self._clear_marker()
+                if attempt == 1 and _should_cleanup_and_retry(str(e)):
+                    self.log("检测到上一次的浏览器实例占着配置目录，正在清理后重试 …")
+                    self._cleanup_profile_users()
                     time.sleep(1.5)
+                    self.port = _free_port()
                     continue
                 self._release_profile()
+                if str(e) == "PORT_DEAD":
+                    raise EngineError(
+                        "浏览器进程起来了，但调试端口一直没打开（已自动重启过一次）。\n"
+                        "常见原因：① 防火墙/杀毒软件拦了本机回环端口；② 浏览器被策略限制。\n"
+                        "处理：点『诊断』查看端口与浏览器状态，或临时关闭安全软件后重试。")
                 raise
+
+    def _cleanup_profile_users(self):
+        """清理占着本程序配置目录的浏览器进程（只动我们自己的 profile，不碰用户浏览器）"""
+        killed = []
+        m = self._read_marker()
+        pid = m.get("pid")
+        if pid and _pid_alive(pid):
+            _kill_pid(pid)
+            killed.append(pid)
+        for p in _find_profile_processes(self.profile):
+            if p not in killed and _pid_alive(p):
+                _kill_pid(p)
+                killed.append(p)
+        self._clear_marker()
+        if killed:
+            self.log("已结束占用配置目录的浏览器进程：%s" % ", ".join(str(x) for x in killed))
+        else:
+            self.log("没有找到占用配置目录的进程（可能是安全软件拦截或端口被防火墙挡住）")
+        return killed
 
     def _launch(self, timeout=45):
         args = [self.exe,
@@ -288,17 +309,14 @@ class BrowserEngine:
             raise
         t0 = time.time()
         last_err = None
+        port_dead_grace = min(25.0, max(5.0, timeout * 0.6))
         while time.time() - t0 < timeout:
             # 关键：浏览器进程如果已经退出（多半是 profile 被占用 / 被安全软件拦），
             # 端口永远不会开，必须立刻报错并说清原因，而不是死等超时。
             rc = self.proc.poll()
             if rc is not None:
                 self.proc = None
-                raise EngineError(
-                    "浏览器启动后立刻退出（退出码 %s）。\n"
-                    "常见原因：① 上次的浏览器进程/窗口还占着同一个配置目录；\n"
-                    "② 杀毒软件拦截了本程序启动的浏览器；③ 浏览器被策略/Tamper Protection 限制。\n"
-                    "处理：关掉所有残留的 Edge/Chrome 窗口后重试，或点『诊断』看详细信息。" % rc)
+                raise EngineError(_explain_exit(rc))
             try:
                 ver = json.loads(_http("http://127.0.0.1:%d/json/version" % self.port, timeout=3))
                 self._browser_ws = ver.get("webSocketDebuggerUrl")
@@ -306,12 +324,19 @@ class BrowserEngine:
                 return
             except Exception as e:
                 last_err = e
-                time.sleep(0.4)
+            elapsed = time.time() - t0
+            if elapsed > port_dead_grace:
+                # 进程还活着但调试端口一直不开：杀掉重来一次，通常能恢复
+                self.log("浏览器进程活着但调试端口 %d 一直没打开（已等 %d 秒），重启浏览器 …"
+                         % (self.port, int(elapsed)))
+                self.kill()
+                raise EngineError("PORT_DEAD")
+            time.sleep(0.4)
         self.kill()
         raise EngineError(
             "浏览器启动超时（端口 %d，已等待 %d 秒）。\n"
             "端口一直没有响应，常见原因：① 防火墙/安全软件拦了本机回环端口；\n"
-            "② 浏览器进程卡在首启引导页；③ 机器较慢，首次启动确实要更久。\n"
+            "② 浏览器卡在首启引导页；③ 机器较慢，首次启动确实要更久。\n"
             "处理：重试一次，或点『诊断』查看端口与浏览器状态。最后错误：%s"
             % (self.port, timeout, last_err))
 
@@ -561,6 +586,56 @@ def download_entry(entry, out_dir, meta, progress=None, should_stop=None):
 def _clean(s):
     s = re.sub(r'[\\/:*?"<>|\r\n\t]+', " ", s or "")
     return re.sub(r"\s+", " ", s).strip()
+
+
+def _explain_exit(rc):
+    """把浏览器秒退的退出码翻译成人话（用户机器上实测见过 0 和 21）"""
+    meaning = {
+        0: "浏览器把请求转交给了已在运行的实例，然后正常退出——说明同一个配置目录已经被另一个浏览器占用",
+        21: "配置目录被另一个浏览器进程锁住，无法启动",
+        1: "浏览器启动失败（参数/环境问题，或系统没有可用的图形界面）",
+    }
+    hint = meaning.get(int(rc) if isinstance(rc, int) else rc, "浏览器异常退出")
+    return ("浏览器启动后立刻退出（退出码 %s）：%s。\n"
+            "最常见原因：上次的登录窗口/后台浏览器没关干净，仍占着本程序的配置目录。\n"
+            "程序会自动清理并重试一次；若仍失败，请手动结束所有 Edge/Chrome 进程后重试，"
+            "或点『诊断』查看详细信息。" % (rc, hint))
+
+
+def _should_cleanup_and_retry(msg):
+    return ("立刻退出" in msg) or ("PORT_DEAD" in msg) or ("超时" in msg)
+
+
+def _find_profile_processes(profile_path):
+    """找出命令行里带本程序配置目录的浏览器进程（不会误杀用户自己的浏览器）"""
+    pids = []
+    key = os.path.abspath(profile_path).lower()
+    try:
+        if sys.platform.startswith("win"):
+            ps = ("Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and "
+                  "$_.CommandLine.ToLower().Contains('%s') } | "
+                  "Select-Object -ExpandProperty ProcessId" % key)
+            out = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                                 capture_output=True, text=True, timeout=25,
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout or ""
+            for line in out.splitlines():
+                line = line.strip()
+                if line.isdigit():
+                    pids.append(int(line))
+        else:
+            for pid in os.listdir("/proc"):
+                if not pid.isdigit():
+                    continue
+                try:
+                    with open("/proc/%s/cmdline" % pid, "rb") as f:
+                        cmd = f.read().decode("utf-8", "replace").lower()
+                except Exception:
+                    continue
+                if key in cmd:
+                    pids.append(int(pid))
+    except Exception:
+        pass
+    return pids
 
 
 def _pid_alive(pid):

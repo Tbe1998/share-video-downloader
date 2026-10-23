@@ -23,7 +23,7 @@ sys.path.insert(0, HERE)
 
 APP_NAME = "DouyinDownloader"
 APP_TITLE = "抖音无水印下载器"
-VERSION = "2.3"
+VERSION = "2.4"
 
 # ---------------- 配置 ----------------
 def app_dir():
