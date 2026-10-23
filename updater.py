@@ -96,6 +96,21 @@ def manifest_urls(custom=None):
     return list(DEFAULT_MANIFESTS)
 
 
+def _ascii_url(url):
+    """把 URL 里的非 ASCII 字符（例如中文文件名）百分号编码。
+
+    urllib 不会自动转义，遇到中文文件名会抛
+    'ascii' codec can't encode characters —— v3.1 升级失败就是这个原因。
+    """
+    try:
+        parts = urllib.parse.urlsplit(url)
+        path = urllib.parse.quote(parts.path, safe="/%:@&=+$,-_.!~*'()")
+        query = urllib.parse.quote(parts.query, safe="=&%:/?@+")
+        return urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, query, parts.fragment))
+    except Exception:
+        return url
+
+
 def _read_manifest(url, timeout=10):
     """读 NAS 镜像上的 latest.json。
 
@@ -116,7 +131,7 @@ def _read_manifest(url, timeout=10):
             "size": int(data.get("package_size") or data.get("size") or 0),
             "digest": ("sha256:" + (data.get("package_sha256") or "").strip())
                        if data.get("package_sha256") else "",
-            "candidates": [urllib.parse.urljoin(url, pkg)],
+            "candidates": [_ascii_url(urllib.parse.urljoin(url, pkg))],
             "exe_name": data.get("exe_name") or "",
             "page": data.get("page") or GH_RELEASES,
         }
@@ -127,7 +142,7 @@ def _read_manifest(url, timeout=10):
         "kind": "exe",
         "size": int(data.get("size") or 0),
         "digest": "sha256:" + (data.get("sha256") or "").strip() if data.get("sha256") else "",
-        "candidates": [urllib.parse.urljoin(url, exe_rel)],
+        "candidates": [_ascii_url(urllib.parse.urljoin(url, exe_rel))],
         "page": data.get("page") or GH_RELEASES,
     }
 
@@ -136,21 +151,17 @@ def _read_github(timeout=12):
     """直连 GitHub API（国内常被墙）"""
     data = _get(GH_API_LATEST, timeout=timeout)
     tag = data.get("tag_name") or ""
-    asset_url, size, digest = "", 0, ""
-    for a in data.get("assets") or []:
-        if (a.get("name") or "").lower().endswith(".exe"):
-            asset_url = a.get("browser_download_url") or ""
-            size = a.get("size") or 0
-            digest = a.get("digest") or ""
-            break
-    if not asset_url:
-        raise UpdateError("Release 里没有 exe 资产")
+    a = _pick_asset(data.get("assets") or [], "package") or _pick_asset(data.get("assets") or [], "exe")
+    if not a:
+        raise UpdateError("Release 里没有可用资产")
+    asset_url = a.get("browser_download_url") or ""
+    kind = "package" if (a.get("name") or "").lower().endswith(".zip") else "exe"
     cands = [asset_url] + [p + asset_url for p in GH_PROXIES]
     return {
         "version": tag.lstrip("vV"), "tag": tag,
         "notes": (data.get("body") or "").strip(),
-        "kind": "exe",
-        "size": size, "digest": digest,
+        "kind": kind,
+        "size": a.get("size") or 0, "digest": a.get("digest") or "",
         "candidates": cands,
         "page": data.get("html_url") or GH_RELEASES,
     }
@@ -165,7 +176,7 @@ def check_latest(custom_manifest=None, timeout=8, allow_github=True):
             info = _read_manifest(m, timeout=timeout)
             info["source"] = "镜像 " + host
             # 镜像上也挂 GitHub 兜底地址（万一镜像中途挂了）
-            gh = _github_candidates(info["version"], quiet=True)
+            gh = _github_candidates(info["version"], quiet=True, kind=info.get("kind") or "package")
             info["candidates"] = info["candidates"] + gh
             return info
         except Exception as e:
@@ -180,23 +191,43 @@ def check_latest(custom_manifest=None, timeout=8, allow_github=True):
     raise UpdateError("所有更新源都连不上：\n" + "\n".join("  · " + x for x in errors))
 
 
-def _github_candidates(version=None, quiet=True):
-    """尽力拿到与版本对应的 GitHub 资产直链 + 加速镜像地址（拿不到就返回空）"""
+def _pick_asset(assets, kind="package"):
+    """按更新类型挑资产：整包要 win64.zip（排除网页版），单文件要 .exe"""
+    for a in assets or []:
+        n = (a.get("name") or "").lower()
+        if kind == "package":
+            if n.endswith("-win64.zip") and "web" not in n:
+                return a
+        else:
+            if n.endswith(".exe"):
+                return a
+    return None
+
+
+def _github_candidates(version=None, quiet=True, kind="package"):
+    """尽力拿到与版本对应的 GitHub 资产直链 + 加速镜像地址（拿不到就返回空）
+
+    注意：必须按 kind 取对应资产。早先这里固定取 .exe，
+    整包更新时就会把 exe 与 zip 的 sha256 比较，导致三个加速源全报“校验不一致”。
+    """
     try:
         data = _get(GH_API_LATEST, timeout=6)
     except Exception:
         return []
     if version and str(data.get("tag_name") or "").lstrip("vV") != str(version).lstrip("vV"):
         return []
-    for a in data.get("assets") or []:
-        if (a.get("name") or "").lower().endswith(".exe"):
-            u = a["browser_download_url"]
-            return [u] + [p + u for p in GH_PROXIES]
-    return []
+    a = _pick_asset(data.get("assets") or [], kind)
+    if a is None and kind == "package":          # 老 Release 没有整包时退回 exe
+        a = _pick_asset(data.get("assets") or [], "exe")
+    if not a:
+        return []
+    u = a.get("browser_download_url") or ""
+    return ([u] + [p + u for p in GH_PROXIES]) if u else []
 
 
 # ---------------- 下载 ----------------
 def download(url, dest, progress=None, timeout=60):
+    url = _ascii_url(url)          # 中文文件名等非 ASCII 字符先转义
     os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
     h = hashlib.sha256()
     got = 0
