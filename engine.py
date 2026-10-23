@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -90,6 +91,23 @@ PAGE_META_JS = r"""
 """
 
 
+NICK_JS = r"""
+(() => {
+  const sels = ['[data-e2e="user-name"]', '[data-e2e="user-info"] [data-e2e="user-name"]',
+                'img[alt*="头像"]', '[data-e2e="live-avatar"] img'];
+  for (const s of sels) {
+    const el = document.querySelector(s);
+    if (el) {
+      const t = (el.innerText || el.getAttribute('alt') || '').trim();
+      if (t) return t;
+    }
+  }
+  const t = document.title || '';
+  return t ? t.split(/[-_|]/)[0].trim() : '';
+})()
+"""
+
+
 def _br_of(url):
     m = re.search(r"[?&]br=(\d+)", url or "")
     return int(m.group(1)) if m else 0
@@ -97,6 +115,10 @@ def _br_of(url):
 
 class EngineError(RuntimeError):
     pass
+
+
+# 同一个浏览器 profile 目录同一时刻只能被一个浏览器进程占用
+_PROFILE_LOCK = threading.Lock()
 
 
 def find_browser(explicit=None):
@@ -128,6 +150,8 @@ def profile_dir(base=None):
 class BrowserEngine:
     """长驻的浏览器进程 + 一个页面 session。"""
 
+    _lock_held = False
+
     def __init__(self, exe=None, headless=False, port=0, profile=None, log=print):
         self.exe = find_browser(exe)
         self.headless = headless
@@ -136,11 +160,30 @@ class BrowserEngine:
         self.log = log
         self.proc = None
         self.sess = None
+        self._lock_held = False
 
     # ---------- 进程 ----------
+    def _acquire_profile(self):
+        """同一个 profile 目录同一时刻只能有一个浏览器进程，否则后启动的会直接退出。"""
+        if not self._lock_held:
+            _PROFILE_LOCK.acquire()
+            self._lock_held = True
+
+    def _release_profile(self):
+        if self._lock_held:
+            self._lock_held = False
+            try:
+                _PROFILE_LOCK.release()
+            except RuntimeError:
+                pass
+
+    def is_alive(self):
+        return bool(self.proc) and self.proc.poll() is None and self.sess is not None
+
     def start(self, timeout=25):
-        if self.proc and self.proc.poll() is None:
+        if self.is_alive():
             return
+        self._acquire_profile()
         args = [self.exe,
                 "--remote-debugging-port=%d" % self.port,
                 "--user-data-dir=%s" % self.profile,
@@ -154,8 +197,12 @@ class BrowserEngine:
             args += ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"]
         args.append("about:blank")
         creation = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform.startswith("win") else 0
-        self.proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                     creationflags=creation)
+        try:
+            self.proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                         creationflags=creation)
+        except Exception:
+            self._release_profile()
+            raise
         t0 = time.time()
         while time.time() - t0 < timeout:
             try:
@@ -165,6 +212,7 @@ class BrowserEngine:
                 return
             except Exception:
                 time.sleep(0.4)
+        self.kill()
         raise EngineError("浏览器启动超时（端口 %d）" % self.port)
 
     def _connect_page(self):
@@ -207,6 +255,8 @@ class BrowserEngine:
                     self.proc.kill()
                 except Exception:
                     pass
+        self.proc = None
+        self._release_profile()
 
     # ---------- 页面操作 ----------
     def goto(self, url, wait=2.0):
@@ -297,6 +347,34 @@ class BrowserEngine:
             return json.loads(raw) if raw else {}
         except Exception:
             return {}
+
+    # ---------- 登录状态 ----------
+    def login_status(self, want_nickname=True):
+        """用 CDP 读本 profile 的 cookie 判断是否已登录抖音"""
+        self.start()
+        cookies = []
+        for method in ("Network.getAllCookies", "Storage.getCookies"):
+            try:
+                res = self.sess.call(method)
+                cookies = res.get("cookies") or []
+                if cookies:
+                    break
+            except Exception:
+                continue
+        names = {c.get("name") for c in cookies}
+        auth_keys = [n for n in ("sessionid", "sessionid_ss", "sid_tt", "uid_tt", "ttwid", "passport_csrf_token")
+                     if n in names]
+        logged = any(n in names for n in ("sessionid", "sessionid_ss", "sid_tt"))
+        nick = ""
+        if logged and want_nickname:
+            try:
+                self.sess.call("Page.navigate", {"url": "https://www.douyin.com/"})
+                time.sleep(3.0)
+                nick = self.sess.evaluate(NICK_JS) or ""
+            except Exception:
+                nick = ""
+        return {"logged_in": logged, "cookies": auth_keys, "nickname": nick,
+                "cookie_count": len(cookies)}
 
 
 QUALITY_TARGET = {"1080p": 1080, "720p": 720, "540p": 540, "480p": 480}

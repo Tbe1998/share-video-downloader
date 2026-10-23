@@ -23,7 +23,7 @@ sys.path.insert(0, HERE)
 
 APP_NAME = "DouyinDownloader"
 APP_TITLE = "抖音无水印下载器"
-VERSION = "2.0"
+VERSION = "2.1"
 
 # ---------------- 配置 ----------------
 def app_dir():
@@ -138,8 +138,14 @@ def run_cli(argv):
         return 2
     aweme_id = extract_aweme_id(url)
     if not aweme_id:
-        print("错误: 链接里找不到作品ID")
-        return 2
+        import dycore
+        print("[1/3] 分享短链跳转解析作品ID …")
+        try:
+            aweme_id = dycore.DouyinClient().resolve_id(extract_url(url))
+        except Exception as ex:
+            print("错误: 链接解析失败 - %s" % ex)
+            return 2
+    print("        作品ID: %s" % aweme_id)
     e = eng.BrowserEngine(headless=headless, profile=None, log=print)
     try:
         print("[1/3] 打开作品页并取数据 …")
@@ -196,11 +202,11 @@ QLineEdit:focus, QComboBox:focus { border-color:#3b4a6b; }
 QComboBox::drop-down { border:none; width:20px; }
 QComboBox QAbstractItemView { background:#151922; border:1px solid #252c3b; selection-background-color:#26304a; outline:none; }
 QPushButton { background:#1c2130; border:1px solid #252c3b; border-radius:8px; padding:8px 16px; }
-QPushButton:hover:not(:disabled) { background:#232b3d; border-color:#3b4a6b; }
-QPushButton:disabled { color:#5b6577; border-color:#1e2432; }
+QPushButton:hover { background:#232b3d; border-color:#3b4a6b; }
+QPushButton:disabled { color:#5b6577; border-color:#1e2432; background:#161b26; }
 QPushButton#primary { background:qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #ff2d55, stop:1 #ff5c7a);
-    border:none; color:#fff; font-weight:600; }
-QPushButton#primary:hover:not(:disabled) { background:qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #ff3b60, stop:1 #ff6c88); }
+    border:none; color:#ffffff; font-weight:600; }
+QPushButton#primary:hover { background:qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #ff3b60, stop:1 #ff6c88); }
 QProgressBar { background:#151922; border:1px solid #252c3b; border-radius:7px; height:14px; text-align:center; color:#c9d4e6; }
 QProgressBar::chunk { border-radius:6px; background:qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #ff2d55, stop:1 #25f4ee); }
 QLabel#hint { color:#8b95a9; font-size:12px; }
@@ -212,7 +218,7 @@ QPlainTextEdit#log { font-family:Consolas,"Courier New",monospace; font-size:12p
 
 
 def run_gui(test_hook=None):
-    from PySide6.QtCore import QThread, Qt, Signal, QSize
+    from PySide6.QtCore import QThread, Qt, Signal, QSize, QTimer
     from PySide6.QtGui import QFont, QPixmap, QAction
     from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QGridLayout,
                                    QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
@@ -226,19 +232,36 @@ def run_gui(test_hook=None):
         fail = Signal(str)
         log = Signal(str)
 
-        def __init__(self, aweme_id, headless):
+        def __init__(self, url, headless, reuse_engine=None):
             super().__init__()
-            self.aweme_id = aweme_id
+            self.url = url
             self.headless = headless
+            self.reuse = reuse_engine
 
         def run(self):
             e = None
+            own = False
             try:
-                e = eng.BrowserEngine(headless=self.headless)
-                self.log.emit("启动浏览器引擎：%s" % os.path.basename(e.exe))
-                e.start()
+                # 短链(v.douyin.com/xxx)里没有作品ID，必须先跟随跳转解析出来
+                import dycore
+                self.log.emit("解析分享链接：%s" % self.url)
+                try:
+                    aweme_id = dycore.DouyinClient().resolve_id(self.url)
+                except Exception as ex:
+                    self.fail.emit("链接解析失败：%s\n请确认复制的是抖音作品的分享链接（v.douyin.com/… 或 douyin.com/video/…）" % ex)
+                    return
+                self.log.emit("已解析出作品ID：%s" % aweme_id)
+                # 如果登录窗口已经开着，直接复用它（同一个 profile 不能再开第二个浏览器）
+                if self.reuse is not None and self.reuse.is_alive():
+                    e = self.reuse
+                    self.log.emit("复用已打开的浏览器窗口")
+                else:
+                    e = eng.BrowserEngine(headless=self.headless)
+                    own = True
+                    self.log.emit("启动浏览器引擎：%s" % os.path.basename(e.exe))
+                    e.start()
                 self.log.emit("打开作品页并等待页面完成签名请求 …")
-                res = e.fetch_detail(self.aweme_id, timeout=45)
+                res = e.fetch_detail(aweme_id, timeout=45)
                 if res.get("detail"):
                     s = eng.summarize(res["detail"])
                     self.ok.emit({"meta": s, "ratios": s["ratios"], "mode": "detail"})
@@ -246,7 +269,7 @@ def run_gui(test_hook=None):
                     self.log.emit("未取到码率列表，改用页面播放流（通常为 720P 无水印）")
                     u = res["fallback_url"]
                     pm = res.get("meta") or {}
-                    self.ok.emit({"meta": {"aweme_id": self.aweme_id,
+                    self.ok.emit({"meta": {"aweme_id": aweme_id,
                                            "desc": (pm.get("desc") or pm.get("title") or "").strip(),
                                            "author": (pm.get("author") or "").strip(),
                                            "height": 720, "duration": 0},
@@ -259,7 +282,7 @@ def run_gui(test_hook=None):
             except Exception as ex:
                 self.fail.emit("%s" % ex)
             finally:
-                if e:
+                if own and e:
                     e.kill()
 
     class DownloadWorker(QThread):
@@ -289,17 +312,45 @@ def run_gui(test_hook=None):
 
     class LoginWorker(QThread):
         log = Signal(str)
+        ready = Signal(object)
         done = Signal(str)
 
         def run(self):
             try:
                 e = eng.BrowserEngine(headless=False)
-                self.log.emit("已打开浏览器，请用抖音 App 扫码登录，登录后关闭该浏览器窗口 …")
+                self.log.emit("正在启动浏览器（首次启动稍慢）…")
                 e.start()
                 e.open_login()
-                self.done.emit("浏览器已打开，扫码登录后关闭浏览器窗口即可")
+                self.ready.emit(e)
+                self.done.emit("浏览器已打开：用抖音 App 扫码登录，登录后点『检查登录』确认")
             except Exception as ex:
                 self.done.emit("打开浏览器失败: %s" % ex)
+
+    class LoginCheckWorker(QThread):
+        result = Signal(dict)
+        fail = Signal(str)
+
+        def __init__(self, engine=None):
+            super().__init__()
+            self.engine = engine
+
+        def run(self):
+            e = self.engine
+            own = False
+            try:
+                if e is None or not e.is_alive():
+                    own = True
+                    e = eng.BrowserEngine(headless=True)
+                st = e.login_status()
+                self.result.emit(st)
+            except Exception as ex:
+                self.fail.emit(str(ex))
+            finally:
+                if own and e is not None:
+                    try:
+                        e.kill()
+                    except Exception:
+                        pass
 
     class Main(QMainWindow):
         def __init__(self):
@@ -312,7 +363,11 @@ def run_gui(test_hook=None):
             self.pw = None
             self.dw = None
             self.last_path = None
+            self.login_engine = None
+            self._check_worker = None
             self._build()
+            # 启动后自动查一次登录状态（放延迟，先让窗口画出来）
+            QTimer.singleShot(1500, self.do_check_login)
 
         # ---------- UI ----------
         def _build(self):
@@ -330,8 +385,14 @@ def run_gui(test_hook=None):
             tbox.addWidget(t); tbox.addWidget(s)
             head.addLayout(tbox)
             head.addStretch(1)
+            self.lb_login = QLabel("登录状态：检测中…")
+            self.lb_login.setObjectName("hint")
+            head.addWidget(self.lb_login)
+            self.btn_checklogin = QPushButton("检查登录")
+            self.btn_checklogin.clicked.connect(self.do_check_login)
+            head.addWidget(self.btn_checklogin)
             self.btn_login = QPushButton("登录抖音")
-            self.btn_login.setToolTip("遇到风控或私密作品时，扫码登录一次即可（登录状态会保存）")
+            self.btn_login.setToolTip("遇到风控或想要 1080P/4K 时，扫码登录一次即可（登录状态会保存在独立浏览器 profile 里）")
             self.btn_login.clicked.connect(self.do_login)
             head.addWidget(self.btn_login)
             root.addLayout(head)
@@ -453,9 +514,11 @@ def run_gui(test_hook=None):
             if not text.strip():
                 QMessageBox.information(self, "提示", "请先粘贴抖音分享链接")
                 return
-            aweme_id = extract_aweme_id(text)
-            if not aweme_id:
-                QMessageBox.warning(self, "链接不对", "没从这个链接里找到作品ID，请确认是抖音作品的分享链接。")
+            url = extract_url(text)
+            if "douyin.com" not in url and not re.search(r"\d{15,20}", url):
+                QMessageBox.warning(self, "链接不对",
+                                    "这看起来不是抖音链接。\n请复制抖音作品里的『分享 → 复制链接』，"
+                                    "形如 https://v.douyin.com/xxxxxxx/")
                 return
             if self.pw and self.pw.isRunning():
                 return
@@ -463,8 +526,8 @@ def run_gui(test_hook=None):
             self.btn_dl.setEnabled(False)
             self.pb.setValue(0)
             self.lb_status.setText("解析中…")
-            self.log("解析作品ID：%s" % aweme_id)
-            self.pw = ParseWorker(aweme_id, headless=True)
+            self.lb_info.setText("正在解析分享链接（短链需要先跳转取出作品ID）…")
+            self.pw = ParseWorker(url, headless=True, reuse_engine=self.login_engine)
             self.pw.log.connect(self.log)
             self.pw.ok.connect(self.on_parsed)
             self.pw.fail.connect(self.on_parse_fail)
@@ -480,6 +543,8 @@ def run_gui(test_hook=None):
             if pack.get("mode") == "page":
                 label += "（未取到多码率列表，使用页面播放流）"
             info = []
+            if self.meta.get("aweme_id"):
+                info.append("作品ID：%s" % self.meta["aweme_id"])
             if self.meta.get("author"):
                 info.append("作者：%s" % self.meta["author"])
             if self.meta.get("desc"):
@@ -558,16 +623,70 @@ def run_gui(test_hook=None):
 
         # ---------- 登录 ----------
         def do_login(self):
+            if self.login_engine and self.login_engine.proc and self.login_engine.proc.poll() is None:
+                self.log("登录浏览器窗口已经开着，请在那个窗口里扫码；完成后点『检查登录』")
+                return
             QMessageBox.information(
                 self, "登录抖音",
-                "将打开一个浏览器窗口，请在其中用抖音 App 扫码登录。\n"
-                "登录成功后直接关闭该浏览器窗口，之后解析即可使用该登录状态。\n\n"
-                "注意：登录期间请不要在这个窗口里点下载。")
+                "接下来会打开一个浏览器窗口，请在其中用抖音 App 扫码登录。\n\n"
+                "登录成功后不用关窗口，直接点本程序右上角的『检查登录』确认状态即可。\n"
+                "登录状态会保存在本程序独立的浏览器 profile 里，之后长期有效。")
+            self.log("正在打开登录用浏览器 …")
             w = LoginWorker()
             w.log.connect(self.log)
+            w.ready.connect(self._on_login_engine)
             w.done.connect(lambda m: self.log(m))
             w.start()
             self._login_worker = w
+
+        def _on_login_engine(self, e):
+            self.login_engine = e
+
+        def do_check_login(self):
+            if self._check_worker and self._check_worker.isRunning():
+                return
+            if self.pw and self.pw.isRunning():
+                # 解析时浏览器正忙，等它结束再查，避免抢同一个 profile
+                QTimer.singleShot(3000, self.do_check_login)
+                return
+            self.btn_checklogin.setEnabled(False)
+            self.lb_login.setText("登录状态：检测中…")
+            self.log("检查登录状态（读取浏览器 profile 里的 cookie）…")
+            w = LoginCheckWorker(self.login_engine)
+            w.result.connect(self._on_login_status)
+            w.fail.connect(lambda m: (self.lb_login.setText("登录状态：检测失败"),
+                                      self.log("检查登录失败：%s" % m)))
+            w.finished.connect(lambda: self.btn_checklogin.setEnabled(True))
+            w.start()
+            self._check_worker = w
+
+        def _on_login_status(self, st):
+            if st.get("logged_in"):
+                nick = st.get("nickname") or ""
+                text = "登录状态：已登录" + ("（%s）" % nick if nick else "")
+                self.lb_login.setStyleSheet("color:#2fd07a;")
+                self.log("登录状态：已登录%s（检测到 %s）" % (
+                    ("，昵称 " + nick) if nick else "", ", ".join(st.get("cookies") or [])))
+            else:
+                text = "登录状态：未登录"
+                self.lb_login.setStyleSheet("color:#ffb020;")
+                self.log("登录状态：未登录（cookie 里没有 sessionid；点『登录抖音』扫码）")
+            self.lb_login.setText(text)
+
+        def closeEvent(self, ev):
+            # 退出前收尾：等后台线程结束、关掉浏览器进程，避免残留
+            for w in (self.pw, self.dw, self._check_worker, getattr(self, "_login_worker", None)):
+                try:
+                    if w is not None and w.isRunning():
+                        w.wait(2500)
+                except Exception:
+                    pass
+            if self.login_engine is not None:
+                try:
+                    self.login_engine.kill()
+                except Exception:
+                    pass
+            super().closeEvent(ev)
 
         # ---------- 打开文件 ----------
         def open_path(self, path):
@@ -660,6 +779,25 @@ def run_selftest():
     return 0 if ok else 3
 
 
+def run_status():
+    """命令行查登录状态"""
+    import engine as eng
+    e = eng.BrowserEngine(headless=True)
+    try:
+        st = e.login_status()
+        if st.get("logged_in"):
+            print("登录状态：已登录 %s（cookie: %s）" % (
+                st.get("nickname") or "", ", ".join(st.get("cookies") or [])))
+        else:
+            print("登录状态：未登录（只检测到 %s）" % (", ".join(st.get("cookies") or []) or "无 cookie"))
+        return 0
+    except Exception as ex:
+        print("检测失败：%s" % ex)
+        return 1
+    finally:
+        e.kill()
+
+
 def main():
     # --windowed 打包后没有控制台，stdout 是 None，直接 print 会崩
     if sys.stdout is None:
@@ -669,6 +807,8 @@ def main():
     argv = sys.argv[1:]
     if "--selftest" in argv or "--check" in argv:
         sys.exit(run_selftest())
+    if "--status" in argv:
+        sys.exit(run_status())
     if any(a in ("--cli", "-c", "--help", "-h") for a in argv) or ("--quality" in argv):
         try:
             sys.exit(run_cli(argv))
