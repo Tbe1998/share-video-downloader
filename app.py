@@ -21,9 +21,11 @@ import traceback
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+import updater  # noqa: E402  （自动更新模块，纯标准库）
+
 APP_NAME = "DouyinDownloader"
 APP_TITLE = "抖音无水印下载器"
-VERSION = "2.4"
+VERSION = "2.5"
 
 # ---------------- 配置 ----------------
 def app_dir():
@@ -353,6 +355,34 @@ def run_gui(test_hook=None):
                     except Exception:
                         pass
 
+    class UpdateCheckWorker(QThread):
+        ok = Signal(dict)
+        fail = Signal(str)
+
+        def run(self):
+            try:
+                self.ok.emit(updater.check_latest())
+            except Exception as ex:
+                self.fail.emit(str(ex))
+
+    class UpdateDownloadWorker(QThread):
+        prog = Signal(int, int)
+        done = Signal(int, str, str)      # 字节, sha256, 落地路径
+        fail = Signal(str)
+
+        def __init__(self, info, dest):
+            super().__init__()
+            self.info = info
+            self.dest = dest
+
+        def run(self):
+            try:
+                size, sha = updater.download(self.info["url"], self.dest,
+                                             progress=lambda g, t: self.prog.emit(g, t))
+                self.done.emit(size, sha, self.dest)
+            except Exception as ex:
+                self.fail.emit(str(ex))
+
     class DiagnoseWorker(QThread):
         log = Signal(str)
         done = Signal()
@@ -378,9 +408,16 @@ def run_gui(test_hook=None):
             self.last_path = None
             self.login_engine = None
             self._check_worker = None
+            self.latest_info = None
+            self._upd_check = None
+            self._upd_dl = None
+            self.last_parse_error = ""
+            self.fail_streak = int(CFG.get("fail_streak", 0) or 0)
             self._build()
             # 启动后自动查一次登录状态（放延迟，先让窗口画出来）
             QTimer.singleShot(1500, self.do_check_login)
+            # 启动后静默检查更新（不打扰，只在日志里提示）
+            QTimer.singleShot(4000, lambda: self.do_check_update(silent=True))
 
         # ---------- UI ----------
         def _build(self):
@@ -412,6 +449,13 @@ def run_gui(test_hook=None):
             self.btn_diag.setToolTip("浏览器启动失败/超时时点这里，会把浏览器路径、端口、残留进程等检查一遍写进日志")
             self.btn_diag.clicked.connect(self.do_diagnose)
             head.addWidget(self.btn_diag)
+            self.btn_update = QPushButton("检查更新")
+            self.btn_update.setToolTip("从 GitHub 检查新版本；有新版会直接下载并自动替换重启")
+            self.btn_update.clicked.connect(lambda: self.do_check_update(silent=False))
+            head.addWidget(self.btn_update)
+            self.lb_ver = QLabel("v%s" % VERSION)
+            self.lb_ver.setObjectName("hint")
+            head.addWidget(self.lb_ver)
             root.addLayout(head)
 
             g1 = QGroupBox("① 链接")
@@ -498,6 +542,16 @@ def run_gui(test_hook=None):
             self.log_box.setMinimumHeight(120)
             root.addWidget(self.log_box, 1)
 
+            rowlog = QHBoxLayout()
+            self.lb_tip = QLabel("")
+            self.lb_tip.setObjectName("hint")
+            rowlog.addWidget(self.lb_tip, 1)
+            self.btn_copy_diag = QPushButton("复制诊断信息")
+            self.btn_copy_diag.setToolTip("解析失效/出错时点这个，把版本、错误和最近日志复制到剪贴板，直接发给助手")
+            self.btn_copy_diag.clicked.connect(self.do_copy_diag)
+            rowlog.addWidget(self.btn_copy_diag)
+            root.addLayout(rowlog)
+
             self.cb_headless = QComboBox()
 
         def log(self, msg):
@@ -555,6 +609,9 @@ def run_gui(test_hook=None):
             self.meta = pack["meta"]
             self.ratios = pack["ratios"]
             self.mode = pack.get("mode")
+            self.fail_streak = 0
+            self.last_parse_error = ""
+            CFG.set("fail_streak", 0)
             hs = sorted({r.get("height") or 0 for r in self.ratios if r.get("height")}, reverse=True)
             label = " / ".join("%dp" % h for h in hs) or "页面播放流"
             if pack.get("mode") == "page":
@@ -575,9 +632,27 @@ def run_gui(test_hook=None):
             self.log("解析成功，可选清晰度：%s" % label)
 
         def on_parse_fail(self, msg):
+            self.last_parse_error = msg
+            self.fail_streak += 1
+            CFG.set("fail_streak", self.fail_streak)
             self.lb_status.setText("解析失败")
             self.log("解析失败：%s" % msg)
-            QMessageBox.warning(self, "解析失败", msg)
+            if self.fail_streak >= 2:
+                self.lb_tip.setText("⚠ 连续 %d 次解析失败，解析方式可能需要更新" % self.fail_streak)
+                self.log("⚠ 已连续 %d 次解析失败。这通常意味着抖音改了风控/签名方式，"
+                         "需要更新本程序的解析逻辑。请先点『检查更新』看有没有新版本；"
+                         "如果还是不行，点『复制诊断信息』把内容发给助手修复。" % self.fail_streak)
+                box = QMessageBox(self)
+                box.setWindowTitle("解析连续失败")
+                box.setIcon(QMessageBox.Warning)
+                box.setText("已连续 %d 次解析失败。\n\n"
+                            "这通常意味着抖音改了风控/签名，当前版本的解析方式可能已经失效。\n"
+                            "建议顺序：① 点『检查更新』升级到最新版；② 仍失败就点『复制诊断信息』"
+                            "把内容发给助手修复。" % self.fail_streak)
+                box.setDetailedText(msg)
+                box.exec()
+            else:
+                QMessageBox.warning(self, "解析失败", msg)
 
         # ---------- 下载 ----------
         def do_download(self):
@@ -668,6 +743,122 @@ def run_gui(test_hook=None):
             w.start()
             self._diag_worker = w
 
+        # ---------- 检查更新 / 自动更新 ----------
+        def do_check_update(self, silent=False):
+            if self._upd_check is not None and self._upd_check.isRunning():
+                return
+            self.btn_update.setEnabled(False)
+            if not silent:
+                self.log("正在检查更新（GitHub）…")
+            w = UpdateCheckWorker()
+            w.ok.connect(lambda info: self._on_update_info(info, silent))
+            w.fail.connect(lambda m: self._on_update_fail(m, silent))
+            w.finished.connect(lambda: self.btn_update.setEnabled(True))
+            w.start()
+            self._upd_check = w
+
+        def _on_update_info(self, info, silent):
+            self.latest_info = info
+            if updater.is_newer(info.get("version"), VERSION):
+                self.btn_update.setText("更新到 v%s" % info["version"])
+                self.lb_tip.setText("发现新版本 v%s（当前 v%s）" % (info["version"], VERSION))
+                self.log("发现新版本 v%s（当前 v%s）" % (info["version"], VERSION))
+                if silent:
+                    self.log("点右上角『更新到 v%s』即可自动升级并重启。" % info["version"])
+                    return
+                notes = (info.get("notes") or "").strip()
+                msg = ("发现新版本 v%s，当前是 v%s。\n\n%s\n\n"
+                       "现在下载并自动更新吗？更新后程序会自动重启，登录状态和设置都不受影响。"
+                       % (info["version"], VERSION, notes[:800]))
+                if QMessageBox.question(self, "发现新版本", msg) == QMessageBox.Yes:
+                    self.do_update(info)
+            else:
+                self.lb_tip.setText("已是最新版本 v%s" % VERSION)
+                self.log("已是最新版本 v%s" % VERSION)
+                if not silent:
+                    QMessageBox.information(self, "检查更新", "当前已是最新版本 v%s。" % VERSION)
+
+        def _on_update_fail(self, msg, silent):
+            self.log("检查更新失败：%s" % msg)
+            if not silent:
+                QMessageBox.warning(self, "检查更新失败",
+                                    "%s\n\n也可以打开发布页手动下载：\n%s"
+                                    % (msg, "https://github.com/%s/releases/latest" % updater.REPO))
+
+        def do_update(self, info=None):
+            info = info or self.latest_info
+            if not info:
+                self.do_check_update(silent=False)
+                return
+            if not updater.can_self_update():
+                url = info.get("page") or ("https://github.com/%s/releases/latest" % updater.REPO)
+                self.log("当前不是打包版或不是 Windows，不能自动替换，已打开发布页：%s" % url)
+                updater.open_page(url)
+                QMessageBox.information(self, "需要手动更新",
+                                        "自动替换只在打包后的 Windows 版里生效。\n已为你打开发布页，手动下载覆盖即可。")
+                return
+            if self._upd_dl is not None and self._upd_dl.isRunning():
+                return
+            exe = updater.current_exe()
+            dest = exe + ".new"
+            self.log("开始下载更新包（约 %.1f MB）…" % ((info.get("size") or 0) / 1048576.0))
+            self.lb_status.setText("正在下载新版本 …")
+            w = UpdateDownloadWorker(info, dest)
+            w.prog.connect(lambda g, t: self.lb_status.setText(
+                "更新包下载中 %s（%.1f/%.1f MB）" % (("%.1f%%" % (g * 100.0 / t)) if t else "", g / 1048576.0,
+                                                (t or info.get("size") or 0) / 1048576.0)))
+            w.done.connect(self._on_update_downloaded)
+            w.fail.connect(lambda m: (self.log("更新包下载失败：%s" % m), self.lb_status.setText("更新失败")))
+            w.start()
+            self._upd_dl = w
+
+        def _on_update_downloaded(self, size, sha, path):
+            info = self.latest_info or {}
+            want = (info.get("digest") or "")
+            if want.lower().startswith("sha256:"):
+                want = want[7:]
+            if want and want.lower() != sha.lower():
+                self.log("× 更新包校验失败（sha256 不一致），已中止")
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+                QMessageBox.warning(self, "校验失败",
+                                    "更新包 sha256 与官方记录不一致，已中止更新。\n请重试或联系助手。")
+                return
+            self.log("更新包已下载并校验通过（%.1f MB）" % (size / 1048576.0))
+            try:
+                updater.apply_update_windows(path)
+            except Exception as ex:
+                self.log("启动更新脚本失败：%s" % ex)
+                QMessageBox.warning(self, "更新失败", "无法启动替换脚本：%s" % ex)
+                return
+            self.log("正在关闭并替换为新版本，几秒后会自动重新打开 …")
+            QMessageBox.information(self, "即将更新",
+                                    "程序将自动关闭，替换成新版本后自动重新打开。\n"
+                                    "如果 10 秒后没自动打开，手动双击程序图标即可。")
+            QApplication.quit()
+
+        # ---------- 失效反馈 ----------
+        def do_copy_diag(self):
+            lines = [
+                "== 抖音下载器诊断信息 ==",
+                "版本: v%s" % VERSION,
+                "系统: %s   Python %s" % (sys.platform, sys.version.split()[0]),
+                "程序路径: %s" % updater.current_exe(),
+                "打包运行: %s" % bool(getattr(sys, "frozen", False)),
+                "时间: %s" % time.strftime("%Y-%m-%d %H:%M:%S"),
+                "最近解析错误: %s" % (self.last_parse_error or "无"),
+                "连续解析失败次数: %d" % self.fail_streak,
+                "",
+                "------ 最近日志 ------",
+                "\n".join(self.log_box.toPlainText().splitlines()[-40:]),
+            ]
+            text = "\n".join(lines)
+            QApplication.clipboard().setText(text)
+            self.log("诊断信息已复制到剪贴板，直接粘给助手即可。")
+            self.lb_tip.setText("诊断信息已复制 ✓")
+
         def _on_login_engine(self, e):
             self.login_engine = e
 
@@ -705,7 +896,8 @@ def run_gui(test_hook=None):
         def closeEvent(self, ev):
             # 退出前收尾：等后台线程结束、关掉浏览器进程，避免残留
             for w in (self.pw, self.dw, self._check_worker, getattr(self, "_login_worker", None),
-                      getattr(self, "_diag_worker", None)):
+                      getattr(self, "_diag_worker", None), getattr(self, "_upd_check", None),
+                      getattr(self, "_upd_dl", None)):
                 try:
                     if w is not None and w.isRunning():
                         w.wait(2500)
@@ -794,6 +986,12 @@ def run_selftest():
         say("浏览器:", eng.find_browser())
     except Exception as e:
         say("未找到浏览器（不影响 exe 完整性，运行时需要 Edge/Chrome）:", e)
+    try:
+        import updater
+        say("自动更新模块 OK（可自更新: %s）" % updater.can_self_update())
+    except Exception as e:
+        ok = False
+        say("自动更新模块失败:", e)
     try:
         from cdp import WebSocket  # noqa
         say("WebSocket 客户端 OK")
