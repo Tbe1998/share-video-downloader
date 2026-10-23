@@ -55,6 +55,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { python -m pip install pyinstaller }
           python -m pip install "PySide6==6.9.1"
           if ($LASTEXITCODE -ne 0) { python -m pip install PySide6 }
+          python -m pip install qrcode
+          if ($LASTEXITCODE -ne 0) { Write-Host "qrcode 装失败，二维码功能会降级（不影响其他功能）" }
           pyinstaller --version
           python -c "import PySide6; print('PySide6', PySide6.__version__)"
 

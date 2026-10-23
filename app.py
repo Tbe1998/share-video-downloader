@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -21,11 +22,12 @@ import traceback
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-import updater  # noqa: E402  （自动更新模块，纯标准库）
+import updater   # noqa: E402  （自动更新模块，纯标准库）
+import webserver  # noqa: E402  （手机网页版，纯标准库）
 
 APP_NAME = "DouyinDownloader"
 APP_TITLE = "抖音无水印下载器"
-VERSION = "2.6"
+VERSION = "2.7"
 
 # ---------------- 配置 ----------------
 def app_dir():
@@ -221,12 +223,12 @@ QPlainTextEdit#log { font-family:Consolas,"Courier New",monospace; font-size:12p
 
 
 def run_gui(test_hook=None):
-    from PySide6.QtCore import QThread, Qt, Signal, QSize, QTimer
-    from PySide6.QtGui import QFont, QPixmap, QAction
+    from PySide6.QtCore import QThread, Qt, Signal, QSize, QTimer, QUrl
+    from PySide6.QtGui import QFont, QPixmap, QAction, QDesktopServices
     from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QGridLayout,
                                    QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
                                    QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
-                                   QSizePolicy, QVBoxLayout, QWidget)
+                                   QSizePolicy, QVBoxLayout, QWidget, QDialog)
     import engine as eng
     import dycore
 
@@ -401,6 +403,7 @@ def run_gui(test_hook=None):
                 self.done.emit()
 
     class Main(QMainWindow):
+        login_request = Signal()
         def __init__(self):
             super().__init__()
             self.setWindowTitle("%s v%s" % (APP_TITLE, VERSION))
@@ -416,6 +419,8 @@ def run_gui(test_hook=None):
             self.latest_info = None
             self._upd_check = None
             self._upd_dl = None
+            self.web = None
+            self.login_request.connect(self.do_login)
             self.last_parse_error = ""
             self.fail_streak = int(CFG.get("fail_streak", 0) or 0)
             self._build()
@@ -454,6 +459,10 @@ def run_gui(test_hook=None):
             self.btn_diag.setToolTip("浏览器启动失败/超时时点这里，会把浏览器路径、端口、残留进程等检查一遍写进日志")
             self.btn_diag.clicked.connect(self.do_diagnose)
             head.addWidget(self.btn_diag)
+            self.btn_web = QPushButton("手机网页版")
+            self.btn_web.setToolTip("启动局域网网页版：手机连同一个 WiFi，扫码即可使用（解析/下载仍在电脑上）")
+            self.btn_web.clicked.connect(self.do_web)
+            head.addWidget(self.btn_web)
             self.btn_update = QPushButton("检查更新")
             self.btn_update.setToolTip("从 GitHub 检查新版本；有新版会直接下载并自动替换重启")
             self.btn_update.clicked.connect(lambda: self.do_check_update(silent=False))
@@ -749,6 +758,132 @@ def run_gui(test_hook=None):
             self._diag_worker = w
 
         # ---------- 检查更新 / 自动更新 ----------
+        # ---------------- 手机网页版 ----------------
+        def _web_engine(self):
+            """把桌面端已打开的浏览器（可能已登录）让给网页版复用，避免抢 profile"""
+            e = self.login_engine
+            if e is not None and e.is_alive():
+                return e
+            return None
+
+        def _web_login(self):
+            """手机端点『登录』→ 在电脑上弹出登录浏览器（用信号切回 GUI 线程）"""
+            self.login_request.emit()
+            return "已在电脑上打开抖音登录窗口，请用手机抖音扫码"
+
+        def _web_login_state(self):
+            return self.lb_login.text()
+
+        def do_web(self):
+            if self.web is not None:
+                self.show_web_info()
+                return
+            out_dir = (self.ed_out.text() or "").strip() or default_outdir()
+            port = int(CFG.get("web_port") or 8990)
+            try:
+                self.web = webserver.WebServer(
+                    out_dir, port=port, version=VERSION, log=self.log,
+                    headless=True, engine_getter=self._web_engine,
+                    login_opener=self._web_login, login_checker=self._web_login_state)
+                url = self.web.start()
+            except Exception as ex:
+                self.web = None
+                self.log("启动网页版失败：%s" % ex)
+                QMessageBox.warning(self, "启动失败", "手机网页版启动失败：\n%s" % ex)
+                return
+            self.btn_web.setText("手机版已开")
+            self.log("手机网页版已启动：%s" % url)
+            self.log("手机连同一个 WiFi，扫码或浏览器打开上面地址即可；解析和下载都在电脑上完成。")
+            self.show_web_info()
+
+        def stop_web(self):
+            if self.web is None:
+                return
+            try:
+                self.web.stop()
+            except Exception:
+                pass
+            self.web = None
+            self.btn_web.setText("手机网页版")
+            self.log("手机网页版已停止")
+
+        def show_web_info(self):
+            if self.web is None:
+                return
+            urls = self.web.urls()
+            main_url = self.web.primary_url()
+            dlg = QDialog(self)
+            dlg.setWindowTitle("手机网页版")
+            dlg.setMinimumWidth(430)
+            lay = QVBoxLayout(dlg)
+            tip = QLabel("手机连上同一个 WiFi（或家里网络），扫码打开：\n"
+                         "解析、下载都在这台电脑上做，用的是这里的浏览器和登录态。")
+            tip.setWordWrap(True)
+            lay.addWidget(tip)
+            # 二维码
+            qr_file = self._qr_png(main_url)
+            if qr_file:
+                try:
+                    pix = QPixmap(qr_file)
+                    lb = QLabel()
+                    lb.setPixmap(pix.scaled(230, 230, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                    lb.setAlignment(Qt.AlignCenter)
+                    box = QHBoxLayout()
+                    box.addStretch(1)
+                    box.addWidget(lb)
+                    box.addStretch(1)
+                    lay.addLayout(box)
+                except Exception:
+                    pass
+            for u in urls:
+                row = QHBoxLayout()
+                ed = QLineEdit(u)
+                ed.setReadOnly(True)
+                btn = QPushButton("复制")
+                btn.clicked.connect(lambda _=False, t=u: (QApplication.clipboard().setText(t),
+                                                          btn.setText("已复制")))
+                row.addWidget(ed, 1)
+                row.addWidget(btn)
+                lay.addLayout(row)
+            rowb = QHBoxLayout()
+            b1 = QPushButton("在电脑上预览")
+            b1.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(main_url)))
+            b2 = QPushButton("停止手机版")
+            b2.clicked.connect(lambda: (self.stop_web(), dlg.accept()))
+            b3 = QPushButton("关闭")
+            b3.clicked.connect(dlg.accept)
+            for b in (b1, b2, b3):
+                rowb.addWidget(b)
+            lay.addLayout(rowb)
+            dlg.exec()
+
+        def _qr_png(self, text):
+            """生成二维码 PNG（直接按矩阵用 QPainter 画，避免 SVG 在深色主题下反色/不显示）"""
+            try:
+                import qrcode
+                qr = qrcode.QRCode(border=2, box_size=1)
+                qr.add_data(text)
+                qr.make(fit=True)
+                m = qr.get_matrix()
+                n = len(m)
+                scale = max(4, 240 // max(1, n))
+                px = n * scale
+                from PySide6.QtGui import QImage, QPainter, QColor
+                img = QImage(px, px, QImage.Format_RGB32)
+                img.fill(QColor("#ffffff"))
+                p = QPainter(img)
+                p.setPen(QColor("#000000"))
+                for y, row in enumerate(m):
+                    for x, on in enumerate(row):
+                        if on:
+                            p.fillRect(x * scale, y * scale, scale, scale, QColor("#000000"))
+                p.end()
+                path = os.path.join(tempfile.gettempdir(), "dy_web_qr.png")
+                img.save(path, "PNG")
+                return path
+            except Exception:
+                return None
+
         def do_check_update(self, silent=False):
             if self._upd_check is not None and self._upd_check.isRunning():
                 return
@@ -921,6 +1056,11 @@ def run_gui(test_hook=None):
                         w.wait(2500)
                 except Exception:
                     pass
+            if getattr(self, "web", None) is not None:
+                try:
+                    self.web.stop()
+                except Exception:
+                    pass
             if self.login_engine is not None:
                 try:
                     self.login_engine.kill()
@@ -967,7 +1107,33 @@ def run_gui(test_hook=None):
     w.log("就绪。把抖音分享链接粘到上面的输入框，点『解析』。")
     if test_hook is not None:
         test_hook(app, w)
-    return app.exec()
+    try:
+        rc = app.exec()
+    finally:
+        # 退出前统一收尾：停网页版、关浏览器、等后台线程，避免解释器退出时崩
+        try:
+            if getattr(w, "web", None) is not None:
+                w.web.stop()
+                w.web = None
+        except Exception:
+            pass
+        try:
+            for name in ("_upd_check", "_upd_dl", "_diag_worker", "_login_worker", "pw", "dw"):
+                t = getattr(w, name, None)
+                if t is not None and hasattr(t, "isRunning") and t.isRunning():
+                    t.wait(2000)
+        except Exception:
+            pass
+        try:
+            if getattr(w, "login_engine", None) is not None:
+                w.login_engine.kill()
+        except Exception:
+            pass
+        try:
+            w.close()
+        except Exception:
+            pass
+    return rc
 
 
 def run_selftest():
@@ -1044,6 +1210,29 @@ def run_status():
         e.kill()
 
 
+def run_web_cli(argv):
+    """无界面常驻：app.exe --web [端口] [--out 目录]  手机浏览器访问打印出来的地址"""
+    port = 8990
+    out_dir = os.path.expanduser("~/Downloads")
+    for i, a in enumerate(argv):
+        if a == "--web" and i + 1 < len(argv) and argv[i + 1].isdigit():
+            port = int(argv[i + 1])
+        if a in ("-o", "--out") and i + 1 < len(argv):
+            out_dir = argv[i + 1]
+    srv = webserver.WebServer(out_dir, port=port, version=VERSION,
+                              log=lambda s: print("[web] %s" % s, flush=True), headless=True)
+    url = srv.start()
+    print("手机网页版已启动（保持本窗口不关）：", flush=True)
+    for u in srv.urls():
+        print("  " + u, flush=True)
+    print("下载目录：%s" % out_dir, flush=True)
+    try:
+        while True:
+            time.sleep(3600)
+    finally:
+        srv.stop()
+
+
 def main():
     # --windowed 打包后没有控制台，stdout 是 None，直接 print 会崩
     if sys.stdout is None:
@@ -1055,6 +1244,12 @@ def main():
         sys.exit(run_selftest())
     if "--status" in argv:
         sys.exit(run_status())
+    if "--web" in argv:
+        try:
+            run_web_cli(argv)
+            sys.exit(0)
+        except KeyboardInterrupt:
+            sys.exit(130)
     if any(a in ("--cli", "-c", "--help", "-h") for a in argv) or ("--quality" in argv):
         try:
             sys.exit(run_cli(argv))

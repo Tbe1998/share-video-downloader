@@ -86,7 +86,11 @@ PAGE_META_JS = r"""
   let author = pick('meta[property="og:title"]') || '';
   const nameEl = document.querySelector('[data-e2e="video-detail"] [data-e2e="user-name"]');
   if (nameEl && nameEl.innerText) author = author || nameEl.innerText.trim();
-  return JSON.stringify({title: title, desc: desc, author: author});
+  let cover = pick('meta[property="og:image"]') || pick('meta[name="og:image"]') || '';
+  const v = document.querySelector('video');
+  if (!cover && v && v.poster) cover = v.poster;
+  const dur = (v && v.duration && isFinite(v.duration)) ? Math.round(v.duration * 10) / 10 : 0;
+  return JSON.stringify({title: title, desc: desc, author: author, cover: cover, duration: dur});
 })()
 """
 
