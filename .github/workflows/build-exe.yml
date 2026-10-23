@@ -1,0 +1,208 @@
+name: build-windows-exe
+
+# 云端打包 Windows 单文件 exe（GitHub Actions / windows-latest）
+# 用法：仓库里 Actions → build-windows-exe → Run workflow → 跑完在 Artifacts 下载
+#       抖音视频下载器.exe，解压双击即用（目标电脑不需要装 Python）。
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  release:
+    types: [created]
+
+env:
+  PYTHONUTF8: '1'
+  PYTHONIOENCODING: 'utf-8'
+  PYTHONLEGACYWINDOWSSTDIO: '0'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      APP: DouyinDownloader          # ASCII 内部包名（PyInstaller --name 必须 ASCII）
+      APP_CN: 抖音视频下载器          # 交付给用户看的中文文件名
+      ENTRY: app.py
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: 环境信息（写入任务摘要）
+        shell: pwsh
+        run: |
+          $s = $env:GITHUB_STEP_SUMMARY
+          Add-Content -Path $s -Value "## 抖音视频下载器 — Windows 打包"
+          Add-Content -Path $s -Value ""
+          Add-Content -Path $s -Value "| 项目 | 值 |"
+          Add-Content -Path $s -Value "| --- | --- |"
+          Add-Content -Path $s -Value "| 运行器 | ``windows-latest`` |"
+          Add-Content -Path $s -Value "| 提交 | ``$env:GITHUB_SHA`` |"
+          Add-Content -Path $s -Value "| Python | $((python -V 2>&1)) |"
+          Add-Content -Path $s -Value "| stdout 编码 | $((python -c \"import sys; print(sys.stdout.encoding)\" 2>&1)) |"
+          Add-Content -Path $s -Value ""
+
+      - name: 安装依赖（PySide6 + PyInstaller）
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller==6.22.3
+          if ($LASTEXITCODE -ne 0) { python -m pip install pyinstaller }
+          python -m pip install "PySide6==6.9.1"
+          if ($LASTEXITCODE -ne 0) { python -m pip install PySide6 }
+          pyinstaller --version
+          python -c "import PySide6; print('PySide6', PySide6.__version__)"
+
+      - name: 关闭 Defender 对工作目录的实时扫描
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          try {
+            Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE -ErrorAction Stop
+            Write-Host "已加入 Defender 排除项"
+          } catch {
+            Write-Host "无法修改 Defender 设置（不影响继续构建）：$($_.Exception.Message)"
+          }
+
+      - name: 语法检查
+        run: |
+          python -m py_compile app.py engine.py cdp.py dycore.py
+          python -c "import sys; sys.path.insert(0,'.'); import app, engine, cdp; print('imports OK')"
+
+      - name: 打包单文件 exe（逐套尝试并记退出码）
+        id: build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $name = $env:APP
+          $s = $env:GITHUB_STEP_SUMMARY
+          $common = @(
+            '--noconfirm','--clean','--onefile','--windowed','--name',$name,
+            '--distpath','dist','--workpath','build','--specpath','build',
+            '--exclude-module','tkinter',
+            '--exclude-module','PySide6.QtWebEngineCore',
+            '--exclude-module','PySide6.QtWebEngineWidgets',
+            '--exclude-module','PySide6.QtQuick','--exclude-module','PySide6.QtQml',
+            '--exclude-module','PySide6.Qt3DCore','--exclude-module','PySide6.Qt3DRender',
+            '--exclude-module','PySide6.QtMultimedia','--exclude-module','PySide6.QtCharts',
+            '--exclude-module','PySide6.QtDataVisualization','--exclude-module','PySide6.QtPdf',
+            '--exclude-module','PySide6.QtSql','--exclude-module','PySide6.QtTest',
+            '--exclude-module','PySide6.QtDesigner','--exclude-module','PySide6.QtUiTools',
+            $env:ENTRY
+          )
+          $attempts = @(
+            @{ id = 'onefile';       extra = @() },
+            @{ id = 'onefile-retry'; extra = @() },
+            @{ id = 'onefile-noupx'; extra = @('--noupx') }
+          )
+          Add-Content -Path $s -Value ""
+          Add-Content -Path $s -Value "## 打包尝试记录（仅单文件配置）"
+          Add-Content -Path $s -Value ""
+          Add-Content -Path $s -Value "| # | 配置 | 退出码 | 产物文件 | 误建目录 | 结论 |"
+          Add-Content -Path $s -Value "| --- | --- | --- | --- | --- | --- |"
+
+          $okId = $null; $i = 0
+          foreach ($a in $attempts) {
+            $i++
+            Remove-Item -Recurse -Force dist,build -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
+            $log = "build_$($a.id).log"
+            $argv = $common + $a.extra
+            Write-Host ">>> [$i] $($a.id)"
+            & pyinstaller @argv 2>&1 | Tee-Object -FilePath $log
+            $code = $LASTEXITCODE
+            $hasExe = Test-Path "dist/$name.exe" -PathType Leaf
+            $hasDir = Test-Path "dist/$name" -PathType Container
+            $pass = ($code -eq 0 -and $hasExe -and -not $hasDir)
+            $verdict = '❌ 退出码非 0'
+            if ($pass)            { $verdict = '✅ 采用' }
+            elseif ($hasDir)      { $verdict = '❌ 产生了目录（不符合只输出单文件）' }
+            elseif (-not $hasExe) { $verdict = '❌ 无单文件产物' }
+            Add-Content -Path $s -Value "| $i | ``$($a.id)`` | $code | $hasExe | $hasDir | $verdict |"
+            if ($pass) { $okId = $a.id; break }
+            Add-Content -Path $s -Value ""
+            Add-Content -Path $s -Value "<details><summary>[$($a.id)] 日志尾部 80 行</summary>"
+            Add-Content -Path $s -Value ""
+            Add-Content -Path $s -Value '~~~'
+            Add-Content -Path $s -Value (Get-Content $log -Tail 80 | Out-String)
+            Add-Content -Path $s -Value '~~~'
+            Add-Content -Path $s -Value "</details>"
+          }
+          if (-not $okId) {
+            Write-Output "::error title=打包失败::所有 --onefile 配置均未成功（详见任务摘要）"
+            exit 1
+          }
+          Write-Output "::notice title=打包成功::配置=$okId 产物=dist/$name.exe"
+
+      - name: 生成中文名产物并校验
+        shell: pwsh
+        run: |
+          $name = $env:APP
+          $src = "dist/$name.exe"
+          if (-not (Test-Path $src -PathType Leaf)) { Write-Output "::error title=缺少产物::$src"; exit 1 }
+          if (Test-Path "dist/$name" -PathType Container) { Write-Output "::error title=产物不符::出现了目录"; exit 1 }
+          Copy-Item $src "dist/$env:APP_CN.exe" -Force
+          Remove-Item $src -Force
+          $len = (Get-Item "dist/$env:APP_CN.exe").Length
+          Write-Host ("exe 大小: {0:N1} MB" -f ($len / 1MB))
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ("- 产物：``dist/$env:APP_CN.exe``，{0:N1} MB（单文件，无目录）" -f ($len / 1MB))
+          if ($len -lt 20MB) { Write-Output "::error title=体积异常::小于 20MB，PySide6 多半没打进去"; exit 1 }
+
+      - name: 冒烟测试（exe 实跑 --selftest，不联网）
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path "dist/$env:APP_CN.exe" -ErrorAction Stop).Path
+          Remove-Item douyin_selftest.txt -Force -ErrorAction SilentlyContinue
+          $p = Start-Process -FilePath $exe -ArgumentList @('--selftest') `
+                             -WorkingDirectory (Get-Location).Path -Wait -PassThru
+          Write-Host "exe 退出码: $($p.ExitCode)"
+          $deadline = (Get-Date).AddSeconds(20)
+          while (-not (Test-Path 'douyin_selftest.txt' -PathType Leaf) -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Milliseconds 500 }
+          if (Test-Path 'douyin_selftest.txt' -PathType Leaf) {
+            $body = Get-Content 'douyin_selftest.txt' -Raw
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## exe 自检输出"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '~~~'
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $body
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '~~~'
+            Write-Host $body
+          }
+          if ($p.ExitCode -ne 0) {
+            Write-Output "::error title=自检失败::exe 退出码 $($p.ExitCode)（3=缺件）"
+            exit 1
+          }
+
+      - name: GUI 启动存活检查（仅记录，不判定失败）
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $exe = (Resolve-Path "dist/$env:APP_CN.exe" -ErrorAction Stop).Path
+          $p = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 12
+          if ($p.HasExited) {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- GUI 启动：❌ 进程已退出（退出码 $($p.ExitCode)），Runner 无桌面会话时属正常"
+          } else {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- GUI 启动：✅ 进程存活 12 秒后被结束"
+            Stop-Process -Id $p.Id -Force
+          }
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v7
+        with:
+          name: DouyinDownloader-windows
+          path: dist/${{ env.APP_CN }}.exe
+          if-no-files-found: error
+
+      - name: 上传构建日志（无论成败）
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-logs
+          path: |
+            build_*.log
+            build/warn-*.txt
+            douyin_selftest.txt
+          if-no-files-found: warn
