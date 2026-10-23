@@ -410,7 +410,7 @@ def download_entry(entry, out_dir, meta, progress=None, should_stop=None):
     name_stem = re.split(r"\s+-\s+|#|发布于抖音", name_stem)[0].strip(" _")[:48]
     if not name_stem:
         name_stem = "douyin"
-    name = "%s_p%s_%s.mp4" % (name_stem, entry.get("height") or "?", item["aweme_id"])
+    name = "%s_p%s_%s.mp4" % (name_stem, entry.get("height") or "页面流", item["aweme_id"])
     path = unique_path(os.path.join(out_dir, name))
     tmp = path + ".part"
     hdr = {"User-Agent": UA, "Referer": "https://www.douyin.com/",

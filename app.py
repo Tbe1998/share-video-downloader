@@ -23,7 +23,7 @@ sys.path.insert(0, HERE)
 
 APP_NAME = "DouyinDownloader"
 APP_TITLE = "抖音无水印下载器"
-VERSION = "2.1"
+VERSION = "2.2"
 
 # ---------------- 配置 ----------------
 def app_dir():
@@ -162,14 +162,15 @@ def run_cli(argv):
             print("[2/3] 未取到码率列表，使用页面播放流")
             meta["desc"] = (m.get("desc") or m.get("title") or "").strip()
             meta["author"] = (m.get("author") or "").strip()
-            ratios = [{"gear": "page", "height": 720, "size": 0,
+            ratios = [{"gear": "page", "height": 0, "size": 0,
                        "url": res["fallback_url"], "urls": [res["fallback_url"]], "score": 0}]
         else:
             print("错误: 解析失败（可能需要先在本程序里点『登录抖音』扫码登录）")
             return 1
         pick = eng.choose(ratios, quality)
-        print("       可选: %s" % ", ".join(sorted({str(r.get("height")) + "p" for r in ratios})))
-        print("[3/3] 下载 %sp …" % (pick.get("height") or "?"))
+        hs = sorted({"%sp" % r.get("height") for r in ratios if r.get("height")})
+        print("       可选: %s" % (", ".join(hs) or "页面播放流（分辨率由抖音决定）"))
+        print("[3/3] 下载 %s …" % (("%sp" % pick.get("height")) if pick.get("height") else "页面流"))
         last = [0]
 
         def prog(got, total, speed):
@@ -266,14 +267,14 @@ def run_gui(test_hook=None):
                     s = eng.summarize(res["detail"])
                     self.ok.emit({"meta": s, "ratios": s["ratios"], "mode": "detail"})
                 elif res.get("fallback_url"):
-                    self.log.emit("未取到码率列表，改用页面播放流（通常为 720P 无水印）")
+                    self.log.emit("未取到码率列表，改用页面播放流（分辨率由抖音决定，通常 576P~720P）")
                     u = res["fallback_url"]
                     pm = res.get("meta") or {}
                     self.ok.emit({"meta": {"aweme_id": aweme_id,
                                            "desc": (pm.get("desc") or pm.get("title") or "").strip(),
                                            "author": (pm.get("author") or "").strip(),
-                                           "height": 720, "duration": 0},
-                                  "ratios": [{"gear": "page", "height": 720, "size": 0,
+                                           "height": 0, "duration": 0},
+                                  "ratios": [{"gear": "page", "height": 0, "size": 0,
                                               "url": u, "urls": [u], "score": 0}],
                                   "mode": "page"})
                 else:
@@ -538,10 +539,10 @@ def run_gui(test_hook=None):
             self.meta = pack["meta"]
             self.ratios = pack["ratios"]
             self.mode = pack.get("mode")
-            hs = sorted({r.get("height") or 0 for r in self.ratios}, reverse=True)
-            label = " / ".join("%dp" % h for h in hs if h) or "未知"
+            hs = sorted({r.get("height") or 0 for r in self.ratios if r.get("height")}, reverse=True)
+            label = " / ".join("%dp" % h for h in hs) or "页面播放流"
             if pack.get("mode") == "page":
-                label += "（未取到多码率列表，使用页面播放流）"
+                label = "页面播放流（分辨率由抖音决定，通常 576P~720P）"
             info = []
             if self.meta.get("aweme_id"):
                 info.append("作品ID：%s" % self.meta["aweme_id"])
@@ -587,8 +588,9 @@ def run_gui(test_hook=None):
             self.btn_open.setEnabled(False)
             self.btn_folder.setEnabled(False)
             self.pb.setValue(0)
-            self.lb_status.setText("开始下载 %dp …" % (pick.get("height") or 0))
-            self.log("开始下载：%dp  体积约 %s" % (pick.get("height") or 0,
+            qlabel = ("%dp" % pick["height"]) if pick.get("height") else "页面流"
+            self.lb_status.setText("开始下载 %s …" % qlabel)
+            self.log("开始下载：%s  体积约 %s" % (qlabel,
                                              dycore.human_size(pick.get("size") or 0)))
             self.dw = DownloadWorker(pick, out_dir, self.meta, True)
             self.dw.prog.connect(self.on_prog)
