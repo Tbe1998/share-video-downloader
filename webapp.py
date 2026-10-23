@@ -18,6 +18,23 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+def _fix_stdout():
+    """Windows 下输出被重定向时默认是 cp1252/GBK，打中文会 UnicodeEncodeError。
+    控制台（isatty）不要动，Python 会走 WriteConsoleW；只修重定向到文件的场景。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if stream is None or not hasattr(stream, "reconfigure"):
+                continue
+            try:
+                if stream.isatty():
+                    continue
+            except Exception:
+                pass
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 import sessions   # noqa: E402
 import webserver  # noqa: E402
 from version import VERSION  # noqa: E402
@@ -53,6 +70,7 @@ def inject_saved_login(hub, log):
 
 
 def main():
+    _fix_stdout()
     ap = argparse.ArgumentParser(description="抖音无水印下载器 · 独立手机网页版")
     ap.add_argument("--port", type=int, default=int(os.environ.get("DY_PORT", 8990)))
     ap.add_argument("--host", default="0.0.0.0")

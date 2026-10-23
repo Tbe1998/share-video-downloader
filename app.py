@@ -31,6 +31,23 @@ APP_TITLE = "抖音无水印下载器"
 from version import VERSION  # noqa: E402  唯一版本来源（见 version.py）
 
 # ---------------- 配置 ----------------
+def _fix_stdout():
+    """Windows 下输出被重定向时默认是 cp1252/GBK，打中文会 UnicodeEncodeError。
+    控制台（isatty）不要动，Python 会走 WriteConsoleW；只修重定向到文件的场景。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if stream is None or not hasattr(stream, "reconfigure"):
+                continue
+            try:
+                if stream.isatty():
+                    continue
+            except Exception:
+                pass
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 def app_dir():
     if sys.platform.startswith("win"):
         root = os.environ.get("APPDATA") or os.path.expanduser("~")
