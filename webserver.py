@@ -388,7 +388,7 @@ a.big{display:block;text-align:center;background:#1f8fff;color:#fff;text-decorat
    <button class="ghost" id="btnQrRefresh" style="margin-top:8px">刷新二维码</button>
  </div>
  <button class="ghost" id="btnImport" style="margin-top:8px">导入桌面版登录态（粘贴 cookies.json）</button>
- <textarea id="ck" class="hide" style="min-height:70px;margin-top:8px" placeholder='把电脑上 %APPDATA%\ShareVideoDownloader\cookies.json 的内容整段粘到这里'></textarea>
+ <textarea id="ck" class="hide" style="min-height:70px;margin-top:8px" placeholder='把电脑上「分享视频下载器」文件夹里的 cookies.json 内容整段粘到这里'></textarea>
  <button class="ghost hide" id="btnImportGo" style="margin-top:8px">确认导入</button>
  <div class="tip">想要 1080P/4K 才需要登录。点左边会在<b>电脑上</b>弹出抖音登录页，用手机抖音扫码即可，登录态存在电脑里。</div>
 </div>

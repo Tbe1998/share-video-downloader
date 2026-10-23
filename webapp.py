@@ -7,7 +7,7 @@
   python webapp.py --port 8990 --token myphone123 --out D:\\视频
   python webapp.py --token 固定口令      # 口令固定，手机收藏夹地址长期有效
 
-它会自动读取桌面版保存的登录态（cookies.json），首次解析时注入浏览器，
+它会自动读取程序文件夹里的登录态（cookies.json），首次解析时注入浏览器，
 所以手机上用也能拿到 1080P/4K（前提是桌面版登录过并保存过 cookies）。
 """
 import argparse

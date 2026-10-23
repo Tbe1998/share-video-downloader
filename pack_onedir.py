@@ -40,7 +40,7 @@ DESKTOP = {
 【登录（可选，想要 1080P/4K 才需要）】
 点右上角「登录抖音」→ 在弹出的浏览器窗口里用抖音 App 扫码。
 首次检测到登录后，程序会自动把 sessionid 等登录 cookie 保存到
-%APPDATA%\\ShareVideoDownloader\\cookies.json，之后启动直接复用，不用再扫码。
+程序文件夹里的 cookies.json（就在本程序旁边），之后启动直接复用，不用再扫码。
 
 【手机也能用】
 点「手机网页版」会显示二维码，手机连同一个 WiFi 扫码即可使用；
@@ -53,7 +53,7 @@ DESKTOP = {
 【出问题了】
 1. 连不上/解析失败：先点「检查更新」，可能新版已经修好了
 2. 浏览器启动失败/超时：点「诊断」，把日志发给助手
-3. 更新出问题：%APPDATA%\\ShareVideoDownloader\\update.log
+3. 更新出问题：%APPDATA%\\ShareVideoDownloader\\update.log（仅日志，登录态不再放这里）
 """,
 }
 
@@ -73,7 +73,7 @@ WEB = {
 
 【登录（想要 1080P/4K 才需要）】
 两种方式：
-  A. 在桌面版里登录一次，然后把 %APPDATA%\\ShareVideoDownloader\\cookies.json 的内容
+  A. 在桌面版里登录一次，然后把程序文件夹里的 cookies.json 的内容
      粘到手机页面的「导入桌面版登录态」里
   B. 程序会在启动时自动读取上面那个 cookies.json 并注入
 

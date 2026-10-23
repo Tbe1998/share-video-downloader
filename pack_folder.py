@@ -48,7 +48,7 @@ https://www.topbei.cn/download/douyin/
 【它不做什么】
 只支持视频作品，图文/图集不支持。请只下载你有权保存的内容。
 
-程序配置与浏览器登录态保存在：%APPDATA%\\ShareVideoDownloader（更新 exe 不会影响它）。
+浏览器登录态保存在程序文件夹内的 cookies.json（更新整包不会删掉它）。
 """
 
 

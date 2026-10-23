@@ -5,7 +5,8 @@
 首次运行读一次浏览器里的登录 cookie，把关键字段存到本地；之后启动直接复用，
 不必每次都去浏览器里重新读，也能在换浏览器/清空 profile 后恢复登录。
 
-只依赖标准库。文件默认 600 权限（Windows 上放进用户 APPDATA 目录）。
+只依赖标准库。文件默认 600 权限，**存放在程序所在文件夹里**（cookies.json），
+不再放到 %APPDATA%；老版本留在 APPDATA 的登录态会自动迁移一次。
 注意：这些 cookie 等同于账号登录凭据，**不要外发、不要贴到任何网上**。
 """
 import json
@@ -28,20 +29,67 @@ KEY_COOKIES = (
 AUTH_KEYS = ("sessionid", "sessionid_ss", "sid_tt")
 
 
-def data_dir():
-    """配置/凭据存放目录（桌面版和独立网页版共用同一个目录）"""
+def program_dir():
+    """程序自己所在的文件夹（打包后 = exe 所在目录）"""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def legacy_dir():
+    r"""旧版的 %APPDATA%\ShareVideoDownloader（仅用于一次性迁移）"""
     if sys.platform.startswith("win"):
         root = os.environ.get("APPDATA") or os.path.expanduser("~")
     else:
         root = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
-    d = os.path.join(root, APP_NAME)
-    old = os.path.join(root, APP_DIR_NAME_OLD)
+    return os.path.join(root, APP_NAME)
+
+
+def _writable(d):
     try:
-        if not os.path.isdir(d) and os.path.isdir(old):      # 改名后自动继承旧配置
-            import shutil
-            shutil.copytree(old, d, dirs_exist_ok=True)
+        os.makedirs(d, exist_ok=True)
+        probe = os.path.join(d, ".write_test")
+        with open(probe, "w", encoding="utf-8") as f:
+            f.write("1")
+        os.remove(probe)
+        return True
+    except Exception:
+        return False
+
+
+def _migrate_from(src_dir, dst_dir):
+    """把旧目录里的 cookies.json 复制过来（只在新位置还没有文件时）"""
+    try:
+        import shutil
+        src = os.path.join(src_dir, "cookies.json")
+        dst = os.path.join(dst_dir, "cookies.json")
+        if os.path.isfile(src) and not os.path.isfile(dst):
+            shutil.copy2(src, dst)
+            _tighten(dst)
     except Exception:
         pass
+
+
+def data_dir():
+    """凭据存放目录：**程序文件夹内**（用户要求）。
+
+    顺序：SHAREVIDEO_DATA 环境变量 > 程序所在文件夹 > APPDATA 兜底（程序目录只读时，
+    比如装在 Program Files 又没权限写）。
+    """
+    env = os.environ.get("SHAREVIDEO_DATA")
+    if env:
+        try:
+            os.makedirs(env, exist_ok=True)
+        except Exception:
+            pass
+        return env
+
+    prog = program_dir()
+    if _writable(prog):
+        _migrate_from(legacy_dir(), prog)          # 老版本存在 APPDATA 的登录态搬过来
+        return prog
+
+    d = legacy_dir()                                # 兜底
     try:
         os.makedirs(d, exist_ok=True)
     except Exception:
@@ -146,10 +194,12 @@ def info():
         with open(store_path(), "r", encoding="utf-8") as f:
             d = json.load(f) or {}
     except Exception:
-        return {"exists": False, "keys": [], "logged_in": False, "age_days": None, "updated_at": ""}
+        return {"exists": False, "keys": [], "logged_in": False, "age_days": None,
+                "updated_at": "", "extra": {}, "path": store_path()}
     ts = int(d.get("ts") or 0)
     return {
         "exists": True,
+        "extra": d.get("extra") or {},
         "keys": d.get("keys") or sorted((d.get("cookies") or {}).keys()),
         "logged_in": bool(d.get("logged_in")),
         "updated_at": d.get("updated_at") or "",

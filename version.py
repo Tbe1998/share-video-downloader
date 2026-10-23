@@ -6,14 +6,14 @@
 改名或改版本只改这一个文件。
 """
 
-VERSION = "3.2"
+VERSION = "3.3"
 
 # ---- 命名（用户可见）----
 APP_TITLE = "分享视频下载器"          # 窗口标题 / 界面标题
 APP_TITLE_WEB = "分享视频网页版"       # 网页版程序名
 EXE_NAME = "ShareVideoDownloader"      # PyInstaller 产物名（ASCII）
 EXE_NAME_WEB = "ShareVideoWeb"         # 网页版产物名（ASCII）
-APP_DIR_NAME = "ShareVideoDownloader"  # %APPDATA% 下的配置目录
+APP_DIR_NAME = "ShareVideoDownloader"  # 程序文件夹不可写时的兜底目录名
 APP_DIR_NAME_OLD = "DouyinDownloader"  # 老目录（首次启动自动迁移）
 
 # ---- 发布相关 ----

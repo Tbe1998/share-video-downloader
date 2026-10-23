@@ -320,6 +320,13 @@ def run_gui(test_hook=None):
                     own = True
                     self.log.emit("启动浏览器引擎：%s" % os.path.basename(e.exe))
                     e.start()
+                try:
+                    saved = sessions.load()
+                    if saved:
+                        n = e.set_cookies(saved)
+                        self.log.emit("已注入本地登录态（%d 个 cookie）" % n)
+                except Exception as ex:
+                    self.log.emit("注入本地登录态失败（不影响解析）：%s" % ex)
                 self.log.emit("打开作品页并等待页面完成签名请求 …")
                 res = e.fetch_detail(aweme_id, timeout=45)
                 if res.get("detail"):
@@ -405,6 +412,23 @@ def run_gui(test_hook=None):
             self.engine = engine
 
         def run(self):
+            # ① 优先读程序文件夹里的 cookies.json —— 不启动浏览器、不读 profile
+            try:
+                local = sessions.load()
+            except Exception:
+                local = {}
+            if local and sessions.has_login(local):
+                inf = sessions.info()
+                self.result.emit({
+                    "logged_in": True,
+                    "source": "file",
+                    "cookies": sorted(local.keys()),
+                    "path": sessions.store_path(),
+                    "updated_at": inf.get("updated_at") or "",
+                    "nickname": (inf.get("extra") or {}).get("nickname") or "",
+                })
+                return
+            # ② 本地没有/已失效 → 才去浏览器 profile 读一次并保存
             e = self.engine
             own = False
             try:
@@ -415,7 +439,8 @@ def run_gui(test_hook=None):
                 if st.get("logged_in"):
                     # 登录成功：把关键 cookie 存起来，下次直接复用
                     try:
-                        saved = sessions.save(e.get_all_cookies(key_only=True), extra={"source": "browser"})
+                        saved = sessions.save(e.get_all_cookies(key_only=True),
+                                               extra={"source": "browser", "nickname": st.get("nickname") or ""})
                         st["saved_keys"] = saved
                     except Exception as ex:
                         st["save_error"] = str(ex)
@@ -1189,7 +1214,7 @@ def run_gui(test_hook=None):
                 return
             self.btn_checklogin.setEnabled(False)
             self.lb_login.setText("登录状态：检测中…")
-            self.log("检查登录状态（读取浏览器 profile 里的 cookie）…")
+            self.log("检查登录状态（先读本地 %s）…" % sessions.store_path())
             w = LoginCheckWorker(self.login_engine)
             w.result.connect(self._on_login_status)
             w.fail.connect(lambda m: (self.lb_login.setText("登录状态：检测失败"),
@@ -1207,6 +1232,10 @@ def run_gui(test_hook=None):
                     ("，昵称 " + nick) if nick else "", ", ".join(st.get("cookies") or [])))
                 if st.get("restored"):
                     self.log("已用本地保存的登录态恢复（注入 %d 个 cookie），不用重新扫码" % st["restored"])
+                if st.get("source") == "file":
+                    self.log("登录态来自本地文件：%s（%s）"
+                             % (st.get("path") or sessions.store_path(),
+                                ("更新于 " + st["updated_at"]) if st.get("updated_at") else "已缓存"))
                 if st.get("saved_keys"):
                     self.log("登录态已保存到本地：%s（共 %d 个字段），下次启动自动复用"
                              % (sessions.store_path(), st["saved_keys"]))
@@ -1405,7 +1434,17 @@ def run_selftest():
 
 
 def run_status():
-    """命令行查登录状态"""
+    """命令行查登录状态：先看本地 cookies.json，没有再开浏览器"""
+    print("本地登录态文件：%s" % sessions.store_path())
+    local = sessions.load()
+    if local and sessions.has_login(local):
+        inf = sessions.info()
+        nick = (inf.get("extra") or {}).get("nickname") or ""
+        print("登录状态：已登录 %s（来自本地文件，%d 个字段：%s）" % (
+            nick, len(local), ", ".join(sorted(local.keys()))))
+        print("更新于：%s" % (inf.get("updated_at") or "未知"))
+        return 0
+    print("本地文件里没有可用的登录态，改为检测浏览器 profile …")
     import engine as eng
     e = eng.BrowserEngine(headless=True)
     try:
