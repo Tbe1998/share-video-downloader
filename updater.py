@@ -447,6 +447,24 @@ def extract_package(zip_path):
     raise UpdateError("整包里没有找到 exe")
 
 
+STALE_DIRS = ("_internal", "runtime", "_internal.bak", "runtime.bak")
+
+
+def _clean_stale_dirs(old_dir, new_dir):
+    """删掉新版已不存在的旧运行库目录（只碰这四个已知内部目录，不碰用户文件）"""
+    import shutil
+    gone = []
+    for stale in STALE_DIRS:
+        old_p = os.path.join(old_dir, stale)
+        new_p = os.path.join(new_dir, stale)
+        if os.path.isdir(old_p) and not os.path.isdir(new_p):
+            shutil.rmtree(old_p, ignore_errors=True)
+            if not os.path.isdir(old_p):
+                gone.append(stale)
+            ulog("清理废弃运行库目录：%s → %s" % (stale, "已删除" if not os.path.isdir(old_p) else "失败"))
+    return gone
+
+
 def install_update_package(old_dir=None, old_pid=0, launch=True):
     """整包安装：自己是在新解压的目录里运行的，把整个目录覆盖到旧目录。
 
@@ -503,6 +521,7 @@ def install_update_package(old_dir=None, old_pid=0, launch=True):
             except Exception as ex:
                 failed.append("%s: %s" % (fn, ex))
     ulog("已覆盖 %d 个文件，失败 %d 个 %s" % (copied, len(failed), failed[:5]))
+    _clean_stale_dirs(old_dir, new_dir)
     if not os.path.exists(old_exe):
         ulog("× 覆盖后仍找不到 exe：%s" % old_exe)
         _msgbox("更新失败", "覆盖完成后没找到程序文件，请手动解压覆盖。")
