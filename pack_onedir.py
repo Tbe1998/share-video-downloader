@@ -77,6 +77,22 @@ WEB = {
 }
 
 
+def _fix_stdout():
+    """Windows 重定向输出是 cp1252，打中文会崩；只在非控制台时改成 utf-8"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if stream is None or not hasattr(stream, "reconfigure"):
+                continue
+            try:
+                if stream.isatty():
+                    continue
+            except Exception:
+                pass
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 def copytree(src, dst):
     if os.path.isdir(dst):
         shutil.rmtree(dst, ignore_errors=True)
@@ -116,6 +132,7 @@ def assemble(dist, out, ver, spec):
 
 
 def main():
+    _fix_stdout()
     ap = argparse.ArgumentParser()
     ap.add_argument("--dist", default="dist")
     ap.add_argument("--out", default="out")
