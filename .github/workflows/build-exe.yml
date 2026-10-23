@@ -11,6 +11,8 @@ on:
 
 env:
   PY_EXE: python
+  PYTHONUTF8: "1"            # 内联 python 脚本打中文时别用 cp1252
+  PYTHONIOENCODING: utf-8
 
 jobs:
   build:
