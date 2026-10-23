@@ -25,7 +25,7 @@ import updater  # noqa: E402  （自动更新模块，纯标准库）
 
 APP_NAME = "DouyinDownloader"
 APP_TITLE = "抖音无水印下载器"
-VERSION = "2.5"
+VERSION = "2.6"
 
 # ---------------- 配置 ----------------
 def app_dir():
@@ -361,13 +361,14 @@ def run_gui(test_hook=None):
 
         def run(self):
             try:
-                self.ok.emit(updater.check_latest())
+                self.ok.emit(updater.check_latest(custom_manifest=CFG.get("update_manifest") or None))
             except Exception as ex:
                 self.fail.emit(str(ex))
 
     class UpdateDownloadWorker(QThread):
         prog = Signal(int, int)
-        done = Signal(int, str, str)      # 字节, sha256, 落地路径
+        trying = Signal(str)
+        done = Signal(int, str, str)      # 字节, sha256, 用的下载地址
         fail = Signal(str)
 
         def __init__(self, info, dest):
@@ -377,9 +378,13 @@ def run_gui(test_hook=None):
 
         def run(self):
             try:
-                size, sha = updater.download(self.info["url"], self.dest,
-                                             progress=lambda g, t: self.prog.emit(g, t))
-                self.done.emit(size, sha, self.dest)
+                size, sha, url = updater.download_best(
+                    self.info.get("candidates") or [],
+                    self.dest,
+                    progress=lambda g, t: self.prog.emit(g, t),
+                    digest=self.info.get("digest") or "",
+                    on_try=lambda host: self.trying.emit(host))
+                self.done.emit(size, sha, url)
             except Exception as ex:
                 self.fail.emit(str(ex))
 
@@ -759,31 +764,32 @@ def run_gui(test_hook=None):
 
         def _on_update_info(self, info, silent):
             self.latest_info = info
+            src = info.get("source") or "未知来源"
             if updater.is_newer(info.get("version"), VERSION):
                 self.btn_update.setText("更新到 v%s" % info["version"])
-                self.lb_tip.setText("发现新版本 v%s（当前 v%s）" % (info["version"], VERSION))
-                self.log("发现新版本 v%s（当前 v%s）" % (info["version"], VERSION))
+                self.lb_tip.setText("发现新版本 v%s（当前 v%s，来源：%s）" % (info["version"], VERSION, src))
+                self.log("发现新版本 v%s（当前 v%s），更新源：%s" % (info["version"], VERSION, src))
                 if silent:
                     self.log("点右上角『更新到 v%s』即可自动升级并重启。" % info["version"])
                     return
                 notes = (info.get("notes") or "").strip()
-                msg = ("发现新版本 v%s，当前是 v%s。\n\n%s\n\n"
+                msg = ("发现新版本 v%s，当前是 v%s。\n更新源：%s\n\n%s\n\n"
                        "现在下载并自动更新吗？更新后程序会自动重启，登录状态和设置都不受影响。"
-                       % (info["version"], VERSION, notes[:800]))
+                       % (info["version"], VERSION, src, notes[:800]))
                 if QMessageBox.question(self, "发现新版本", msg) == QMessageBox.Yes:
                     self.do_update(info)
             else:
-                self.lb_tip.setText("已是最新版本 v%s" % VERSION)
-                self.log("已是最新版本 v%s" % VERSION)
+                self.lb_tip.setText("已是最新版本 v%s（来源：%s）" % (VERSION, src))
+                self.log("已是最新版本 v%s（检查来源：%s）" % (VERSION, src))
                 if not silent:
                     QMessageBox.information(self, "检查更新", "当前已是最新版本 v%s。" % VERSION)
 
         def _on_update_fail(self, msg, silent):
             self.log("检查更新失败：%s" % msg)
             if not silent:
-                QMessageBox.warning(self, "检查更新失败",
-                                    "%s\n\n也可以打开发布页手动下载：\n%s"
-                                    % (msg, "https://github.com/%s/releases/latest" % updater.REPO))
+                tip = ("\n\n如果一直连不上，可以把更新源改成 NAS 镜像（默认已内置）：\n"
+                       "  %s\n或者在设置里给我的加速地址。" % "\n  ".join(updater.DEFAULT_MANIFESTS))
+                QMessageBox.warning(self, "检查更新失败", msg + tip)
 
         def do_update(self, info=None):
             info = info or self.latest_info
@@ -801,34 +807,46 @@ def run_gui(test_hook=None):
                 return
             exe = updater.current_exe()
             dest = exe + ".new"
-            self.log("开始下载更新包（约 %.1f MB）…" % ((info.get("size") or 0) / 1048576.0))
+            cands = info.get("candidates") or []
+            self.log("开始下载更新包（约 %.1f MB，可用下载源 %d 个）…"
+                     % ((info.get("size") or 0) / 1048576.0, len(cands)))
             self.lb_status.setText("正在下载新版本 …")
             w = UpdateDownloadWorker(info, dest)
+            w.trying.connect(lambda host: self.log("尝试下载源：%s" % host))
             w.prog.connect(lambda g, t: self.lb_status.setText(
                 "更新包下载中 %s（%.1f/%.1f MB）" % (("%.1f%%" % (g * 100.0 / t)) if t else "", g / 1048576.0,
                                                 (t or info.get("size") or 0) / 1048576.0)))
             w.done.connect(self._on_update_downloaded)
-            w.fail.connect(lambda m: (self.log("更新包下载失败：%s" % m), self.lb_status.setText("更新失败")))
+            w.fail.connect(lambda m: (self.log("更新包下载失败：%s" % m), self.lb_status.setText("更新失败"),
+                                      QMessageBox.warning(self, "更新失败",
+                                                          "%s\n\n所有下载源都失败。可以稍后再试，"
+                                                          "或手动打开发布页下载。" % m)))
             w.start()
             self._upd_dl = w
 
-        def _on_update_downloaded(self, size, sha, path):
+        def _on_update_downloaded(self, size, sha, url):
             info = self.latest_info or {}
             want = (info.get("digest") or "")
             if want.lower().startswith("sha256:"):
                 want = want[7:]
             if want and want.lower() != sha.lower():
-                self.log("× 更新包校验失败（sha256 不一致），已中止")
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
+                self.log("× 校验失败（sha256 不一致），已中止")
                 QMessageBox.warning(self, "校验失败",
-                                    "更新包 sha256 与官方记录不一致，已中止更新。\n请重试或联系助手。")
+                                    "更新包 sha256 与记录不一致，已中止更新。\n请重试或联系助手。")
                 return
-            self.log("更新包已下载并校验通过（%.1f MB）" % (size / 1048576.0))
+            host = ""
             try:
-                updater.apply_update_windows(path)
+                host = url.split("/")[2]
+            except Exception:
+                host = url[:40]
+            self.log("更新包已就绪：%.1f MB，sha256 校验通过（来源 %s）" % (size / 1048576.0, host))
+            new_exe = updater.current_exe() + ".new"
+            if not os.path.exists(new_exe):
+                self.log("× 找不到已下载的更新包：%s" % new_exe)
+                QMessageBox.warning(self, "更新失败", "下载的更新包不见了，请重试。")
+                return
+            try:
+                updater.apply_update_windows(new_exe)
             except Exception as ex:
                 self.log("启动更新脚本失败：%s" % ex)
                 QMessageBox.warning(self, "更新失败", "无法启动替换脚本：%s" % ex)

@@ -29,7 +29,12 @@ README = """抖音无水印下载器 v{ver}
 
 【以后怎么更新】
 不用再下载解压覆盖：点右上角「检查更新」，有新版会提示，一键下载并自动替换、自动重启。
-程序启动时也会静默检查一次，有新版本会在日志里提示。
+国内连不上 GitHub 也没关系——程序会优先用你自己的 NAS 镜像
+（http://192.168.1.6/download/douyin/latest.json 或 https://www.topbei.cn/download/douyin/），
+镜像不通时才去 GitHub，并会自动尝试几个 GitHub 加速镜像。
+
+【下载/更新页（国内可直连）】
+https://www.topbei.cn/download/douyin/
 
 【解析失效了怎么办】
 如果连续解析失败，程序会提示"解析方式可能已失效"。

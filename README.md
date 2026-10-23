@@ -63,15 +63,27 @@
 - 只支持视频作品，**图文/图集作品不支持**。
 - 下载失败常见原因：作品已删/私密、链接不是作品链接、网络不通。
 
-## 自动更新（v2.5 起）
+## 自动更新（v2.5 起，v2.6 起支持国内网络）
 
-- 启动时**静默检查**一次；有新版本会在日志和底部提示条里写出来。
-- 点右上角 **检查更新** → 有新版会弹窗显示更新说明 →「是」即开始下载 →
-  自动校验 sha256 → 关闭程序 → 替换 exe → **自动重新打开新版本**。
+国内直连 GitHub 经常失败，所以更新走**多源**，按顺序自动尝试：
+
+1. `http://192.168.1.6/download/douyin/latest.json` —— **家里局域网的 NAS 镜像**（最快，几毫秒）
+2. `https://www.topbei.cn/download/douyin/latest.json` —— 公网 HTTPS 镜像（不在家也能用）
+3. `https://api.github.com/…/releases/latest` —— 直连 GitHub（可能被墙，最后兜底）
+
+下载 exe 时若某个源失败，会自动换下一个；GitHub 资产还会额外尝试
+`ghfast.top` / `gh-proxy.com` / `ghproxy.net` 三个加速镜像。下载完**必须 sha256 校验通过**才替换。
+
+想换源：编辑 `%APPDATA%\DouyinDownloader\config.json` 里的
+`"update_manifest": "http://你的地址/latest.json,https://备用/latest.json"`（逗号分隔，留空=默认）。
+
+- 启动时**静默检查**一次；有新版本会在日志和底部提示条里写出来（含更新源）。
+- 点右上角 **检查更新** → 有新版弹窗显示更新说明 →「是」→ 自动下载校验 → 关闭 →
+  替换 exe → **自动重新打开新版本**。
 - 登录状态、保存目录、设置都在 `%APPDATA%\DouyinDownloader`，更新 exe 不影响。
 - 每次发布同时提供两种形态：
-  - `DouyinDownloader.exe`：**应用内更新用的单文件**（自动更新下载的就是这个）
-  - `抖音视频下载器-vX.Y.zip`：完整文件夹（exe + 使用说明 + 版本信息），给第一次安装或想手动替换的人
+  - `DouyinDownloader.exe`：**应用内更新用的单文件**
+  - `抖音视频下载器-vX.Y.zip`：完整文件夹（exe + 使用说明 + 版本信息）
 
 ## 解析方式失效时
 
