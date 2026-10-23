@@ -941,7 +941,7 @@ def run_gui(test_hook=None):
             if self._upd_dl is not None and self._upd_dl.isRunning():
                 return
             exe = updater.current_exe()
-            dest = exe + ".new"
+            dest = updater.staged_path(info.get("version") or "")
             cands = info.get("candidates") or []
             self.log("开始下载更新包（约 %.1f MB，可用下载源 %d 个）…"
                      % ((info.get("size") or 0) / 1048576.0, len(cands)))
@@ -975,13 +975,13 @@ def run_gui(test_hook=None):
             except Exception:
                 host = url[:40]
             self.log("更新包已就绪：%.1f MB，sha256 校验通过（来源 %s）" % (size / 1048576.0, host))
-            new_exe = updater.current_exe() + ".new"
+            new_exe = updater.staged_path(info.get("version") or "")
             if not os.path.exists(new_exe):
                 self.log("× 找不到已下载的更新包：%s" % new_exe)
                 QMessageBox.warning(self, "更新失败", "下载的更新包不见了，请重试。")
                 return
             try:
-                updater.apply_update_windows(new_exe)
+                mode = updater.apply_update_windows(new_exe)
             except Exception as ex:
                 self.log("启动更新脚本失败：%s" % ex)
                 QMessageBox.warning(self, "更新失败", "无法启动替换脚本：%s" % ex)
@@ -1265,6 +1265,22 @@ def main():
     if sys.stderr is None:
         sys.stderr = open(os.devnull, "w", encoding="utf-8")
     argv = sys.argv[1:]
+    try:
+        updater.cleanup_staged()          # 清掉上次更新留在临时目录的 exe
+    except Exception:
+        pass
+    if "--install-update" in argv:
+        # 被 updater 调起来的新版本：等旧进程退出 → 覆盖旧 exe → 启动新版
+        old_exe, old_pid = "", 0
+        for i, a in enumerate(argv):
+            if a == "--old-exe" and i + 1 < len(argv):
+                old_exe = argv[i + 1]
+            if a == "--old-pid" and i + 1 < len(argv):
+                try:
+                    old_pid = int(argv[i + 1])
+                except ValueError:
+                    old_pid = 0
+        sys.exit(updater.install_update(old_exe=old_exe, old_pid=old_pid, launch=True))
     if "--selftest" in argv or "--check" in argv:
         sys.exit(run_selftest())
     if "--status" in argv:

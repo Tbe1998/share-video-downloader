@@ -7,7 +7,7 @@
 publish.py 全部从这里读。
 """
 
-VERSION = "2.7"
+VERSION = "2.8"
 
 # 发布到 GitHub 的仓库（发布脚本也用这个）
 REPO = "Tbe1998/douyin-downloader"
