@@ -102,10 +102,12 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "=== 桌面版自检 ==="
-          $p = Start-Process -FilePath "dist/DouyinDownloader/DouyinDownloader.exe" -ArgumentList "--selftest" -Wait -PassThru -NoNewWindow -RedirectStandardOutput selftest.txt
-          Get-Content selftest.txt
+          if (Test-Path douyin_selftest.txt) { Remove-Item douyin_selftest.txt }
+          $p = Start-Process -FilePath "dist/DouyinDownloader/DouyinDownloader.exe" -ArgumentList "--selftest" -Wait -PassThru
+          if (Test-Path douyin_selftest.txt) { Get-Content douyin_selftest.txt -Encoding UTF8 } else { Write-Host "（--windowed 没有 stdout，只能看自检文件）" }
           if ($p.ExitCode -ne 0) { Write-Host "自检退出码 $($p.ExitCode)"; exit 1 }
-          if (-not (Select-String -Path selftest.txt -Pattern "版本一致性 OK" -Quiet)) { Write-Host "版本一致性检查没通过"; exit 1 }
+          if (-not (Test-Path douyin_selftest.txt)) { Write-Host "自检没产出 douyin_selftest.txt"; exit 1 }
+          if (-not (Select-String -Path douyin_selftest.txt -Pattern "版本一致性 OK" -Quiet)) { Write-Host "版本一致性检查没通过"; exit 1 }
           Write-Host "=== 网页版参数检查 ==="
           $w = Start-Process -FilePath "dist/DouyinWebServer/DouyinWebServer.exe" -ArgumentList "--help" -Wait -PassThru -NoNewWindow -RedirectStandardOutput webhelp.txt
           Get-Content webhelp.txt | Select-Object -First 6
