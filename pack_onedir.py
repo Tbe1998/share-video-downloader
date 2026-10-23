@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""把 PyInstaller 的 onedir 产物组装成“完整文件夹 + zip”（桌面版 + 独立网页版）。
+
+onedir 目录结构（PyInstaller 6）：
+  dist/DouyinDownloader/DouyinDownloader.exe
+  dist/DouyinDownloader/_internal/...        ← 所有运行库
+
+输出：
+  out/抖音视频下载器-v<ver>.zip      内部目录 抖音视频下载器/（exe 已改中文名）
+  out/抖音网页版服务-v<ver>.zip      内部目录 抖音网页版服务/
+  另外把解压后的文件夹也留在 out/ 下，方便本机验证
+"""
+import argparse
+import os
+import shutil
+import sys
+import zipfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+
+DESKTOP = {
+    "src": "DouyinDownloader",
+    "exe": "DouyinDownloader.exe",
+    "name": "抖音视频下载器",
+    "readme": """抖音无水印下载器 · 使用说明
+
+【怎么用】
+双击 抖音视频下载器.exe。把抖音分享链接或整段分享文字粘到输入框，点「解析」，
+选清晰度后点「下载」即可。文件默认存到你的下载目录（可改）。
+
+【登录（可选，想要 1080P/4K 才需要）】
+点右上角「登录抖音」→ 在弹出的浏览器窗口里用抖音 App 扫码。
+首次检测到登录后，程序会自动把 sessionid 等登录 cookie 保存到
+%APPDATA%\\DouyinDownloader\\cookies.json，之后启动直接复用，不用再扫码。
+
+【手机也能用】
+点「手机网页版」会显示二维码，手机连同一个 WiFi 扫码即可使用；
+详细用法见同目录的 使用说明.txt 里的手机部分。
+
+【怎么更新】
+点右上角「检查更新」，有新版会自动下载整包并替换、自动重启。
+国内走自建镜像，不依赖 GitHub。
+
+【出问题了】
+1. 连不上/解析失败：先点「检查更新」，可能新版已经修好了
+2. 浏览器启动失败/超时：点「诊断」，把日志发给助手
+3. 更新出问题：%APPDATA%\\DouyinDownloader\\update.log
+""",
+}
+
+WEB = {
+    "src": "DouyinWebServer",
+    "exe": "DouyinWebServer.exe",
+    "name": "抖音网页版服务",
+    "readme": """抖音网页版服务 · 独立版（不依赖桌面版）
+
+【怎么用】
+1. 双击 抖音网页版服务.exe（会弹一个黑窗口，别关它）
+2. 窗口里会显示手机访问地址，形如 http://192.168.x.x:8990/?k=xxxxxx
+3. 手机连同一个 WiFi，浏览器打开这个地址即可用
+
+固定端口/口令（手机收藏夹地址就不变了）：
+  抖音网页版服务.exe --port 8990 --token 你的口令 --out D:\\视频
+
+【登录（想要 1080P/4K 才需要）】
+两种方式：
+  A. 在桌面版里登录一次，然后把 %APPDATA%\\DouyinDownloader\\cookies.json 的内容
+     粘到手机页面的「导入桌面版登录态」里
+  B. 程序会在启动时自动读取上面那个 cookies.json 并注入
+
+【开机自启】
+把 抖音网页版服务.exe 的快捷方式放进：
+  Win+R 输入 shell:startup 打开的文件夹
+""",
+}
+
+
+def copytree(src, dst):
+    if os.path.isdir(dst):
+        shutil.rmtree(dst, ignore_errors=True)
+    shutil.copytree(src, dst)
+
+
+def assemble(dist, out, ver, spec):
+    src_dir = os.path.join(dist, spec["src"])
+    exe_src = os.path.join(src_dir, spec["exe"])
+    if not os.path.exists(exe_src):
+        raise SystemExit("找不到打包产物：%s" % exe_src)
+    folder = os.path.join(out, spec["name"])
+    copytree(src_dir, folder)
+    # 把 exe 改成中文名（内容不变，_internal 仍然在旁边）
+    cn_exe = os.path.join(folder, spec["name"] + ".exe")
+    if os.path.abspath(cn_exe) != os.path.abspath(os.path.join(folder, spec["exe"])):
+        os.replace(os.path.join(folder, spec["exe"]), cn_exe)
+    with open(os.path.join(folder, "使用说明.txt"), "w", encoding="utf-8-sig") as f:
+        f.write(spec["readme"])
+    with open(os.path.join(folder, "版本信息.txt"), "w", encoding="utf-8-sig") as f:
+        f.write("名称：%s\n版本：v%s\n打包时间：%s\n运行库：同目录 _internal 文件夹\n"
+                % (spec["name"], ver, __import__("time").strftime("%Y-%m-%d %H:%M")))
+    zip_path = os.path.join(out, "%s-v%s.zip" % (spec["name"], ver))
+    if os.path.exists(zip_path):
+        os.remove(zip_path)
+    total = 0
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+        for root, _d, files in os.walk(folder):
+            for fn in files:
+                p = os.path.join(root, fn)
+                rel = os.path.relpath(p, out)
+                z.write(p, rel)
+                total += os.path.getsize(p)
+    print("文件夹: %s" % folder)
+    print("zip: %s  %.1f MB（含 %d 字节运行库）" % (zip_path, os.path.getsize(zip_path) / 1048576.0, total))
+    return zip_path
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dist", default="dist")
+    ap.add_argument("--out", default="out")
+    ap.add_argument("--version", default="")
+    args = ap.parse_args()
+    ver = args.version
+    if not ver:
+        from version import VERSION
+        ver = VERSION
+    os.makedirs(args.out, exist_ok=True)
+    z1 = assemble(args.dist, args.out, ver, DESKTOP)
+    z2 = assemble(args.dist, args.out, ver, WEB)
+    print("\n完成：\n  %s\n  %s" % (z1, z2))
+
+
+if __name__ == "__main__":
+    main()

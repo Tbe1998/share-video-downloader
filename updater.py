@@ -97,21 +97,37 @@ def manifest_urls(custom=None):
 
 
 def _read_manifest(url, timeout=10):
-    """读 NAS 镜像上的 latest.json"""
+    """读 NAS 镜像上的 latest.json。
+
+    优先整包（package=zip，onedir 完整文件夹）；没有 package 字段就退回单 exe。
+    """
     data = _get(url, timeout=timeout)
     ver = str(data.get("version") or "").lstrip("vV")
+    pkg = data.get("package") or data.get("zip") or ""
     exe_rel = data.get("exe") or data.get("filename") or ""
-    if not ver or not exe_rel:
+    if not ver or not (pkg or exe_rel):
         raise UpdateError("清单缺字段")
-    exe_url = urllib.parse.urljoin(url, exe_rel)
-    cands = [exe_url]
+    if pkg:
+        return {
+            "version": ver,
+            "tag": data.get("tag") or ("v" + ver),
+            "notes": (data.get("notes") or "").strip(),
+            "kind": "package",
+            "size": int(data.get("package_size") or data.get("size") or 0),
+            "digest": ("sha256:" + (data.get("package_sha256") or "").strip())
+                       if data.get("package_sha256") else "",
+            "candidates": [urllib.parse.urljoin(url, pkg)],
+            "exe_name": data.get("exe_name") or "",
+            "page": data.get("page") or GH_RELEASES,
+        }
     return {
         "version": ver,
         "tag": data.get("tag") or ("v" + ver),
         "notes": (data.get("notes") or "").strip(),
+        "kind": "exe",
         "size": int(data.get("size") or 0),
         "digest": "sha256:" + (data.get("sha256") or "").strip() if data.get("sha256") else "",
-        "candidates": cands,
+        "candidates": [urllib.parse.urljoin(url, exe_rel)],
         "page": data.get("page") or GH_RELEASES,
     }
 
@@ -133,6 +149,7 @@ def _read_github(timeout=12):
     return {
         "version": tag.lstrip("vV"), "tag": tag,
         "notes": (data.get("body") or "").strip(),
+        "kind": "exe",
         "size": size, "digest": digest,
         "candidates": cands,
         "page": data.get("html_url") or GH_RELEASES,
@@ -407,7 +424,105 @@ def install_update(old_exe=None, old_pid=0, launch=True):
     return 0
 
 
-def apply_update_windows(new_exe, exe_path=None):
+def staged_zip_path(version=""):
+    name = "DouyinDownloader-pkg"
+    if version:
+        name += "-v" + str(version).lstrip("vV")
+    return os.path.join(tempfile.gettempdir(), name + ".zip")
+
+
+def extract_package(zip_path):
+    """把整包 zip 解压到临时目录，返回 (里面的 exe 路径, 解压目录)"""
+    import zipfile
+    dest = tempfile.mkdtemp(prefix="dy_pkg_")
+    try:
+        with zipfile.ZipFile(zip_path) as z:
+            z.extractall(dest)
+    except Exception as ex:
+        raise UpdateError("解压失败：%s" % ex)
+    for root, _dirs, files in os.walk(dest):
+        for fn in files:
+            if fn.lower().endswith(".exe"):
+                return os.path.join(root, fn), dest
+    raise UpdateError("整包里没有找到 exe")
+
+
+def install_update_package(old_dir=None, old_pid=0, launch=True):
+    """整包安装：自己是在新解压的目录里运行的，把整个目录覆盖到旧目录。
+
+    onedir 打包后只换 exe 是不够的（_internal 里的运行库也要一起换）。
+    """
+    me = current_exe()
+    new_dir = os.path.dirname(me)
+    old_dir = old_dir or ""
+    ulog("=" * 50)
+    ulog("开始整包更新：新目录=%s  旧目录=%s  旧PID=%s" % (new_dir, old_dir, old_pid))
+    if not old_dir or not os.path.isdir(old_dir):
+        ulog("× 旧目录无效：%r" % old_dir)
+        _msgbox("更新失败", "找不到原来的安装目录：\n%s" % old_dir)
+        return 2
+    if not wait_pid_exit(old_pid, 90):
+        ulog("× 等旧进程退出超时")
+        _msgbox("更新失败", "旧版程序没有退出，更新已中止。请关掉程序后重试。")
+        return 4
+    ulog("旧进程已退出")
+    if not os.path.isdir(os.path.join(old_dir, "_internal")):
+        # 旧版本是单文件 exe：整包装到子文件夹，避免把 _internal 撒在桌面/根目录
+        sub = os.path.join(old_dir, "抖音视频下载器")
+        ulog("检测到旧版是单文件 exe，改为安装到子目录：%s" % sub)
+        try:
+            os.makedirs(sub, exist_ok=True)
+            old_dir = sub
+        except Exception as ex:
+            ulog("× 创建子目录失败：%s" % ex)
+            _msgbox("更新失败", "无法创建安装目录 %s\n%s" % (sub, ex))
+            return 8
+    exe_name = os.path.basename(me)
+    old_exe = os.path.join(old_dir, exe_name)
+    if os.path.exists(old_exe) and not _wait_unlock(old_exe, 60):
+        ulog("× 旧 exe 仍被占用")
+        _msgbox("更新失败", "原程序文件被占用（可能杀毒软件在扫描）。稍后再试或手动解压覆盖。")
+        return 5
+    copied, failed = 0, []
+    import shutil
+    for root, _dirs, files in os.walk(new_dir):
+        rel = os.path.relpath(root, new_dir)
+        target_dir = old_dir if rel == "." else os.path.join(old_dir, rel)
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+        except Exception as ex:
+            failed.append("%s: %s" % (rel, ex))
+            continue
+        for fn in files:
+            src = os.path.join(root, fn)
+            dst = os.path.join(target_dir, fn)
+            try:
+                shutil.copy2(src, dst)
+                copied += 1
+            except Exception as ex:
+                failed.append("%s: %s" % (fn, ex))
+    ulog("已覆盖 %d 个文件，失败 %d 个 %s" % (copied, len(failed), failed[:5]))
+    if not os.path.exists(old_exe):
+        ulog("× 覆盖后仍找不到 exe：%s" % old_exe)
+        _msgbox("更新失败", "覆盖完成后没找到程序文件，请手动解压覆盖。")
+        return 6
+    if launch:
+        try:
+            flags = 0
+            for name in ("DETACHED_PROCESS", "CREATE_NEW_PROCESS_GROUP"):
+                flags |= getattr(subprocess, name, 0)
+            subprocess.Popen([old_exe], close_fds=True, creationflags=flags,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            ulog("已启动新版：%s" % old_exe)
+        except Exception as ex:
+            ulog("× 启动新版失败：%s" % ex)
+            _msgbox("更新完成", "新版本已装好，但自动启动失败，请手动双击程序。")
+            return 7
+    ulog("整包更新完成")
+    return 0
+
+
+def apply_update_windows(new_exe, exe_path=None, old_dir=None):
     """启动「新 exe 自安装」；失败再退回 .cmd 脚本方案。"""
     exe_path = exe_path or current_exe()
     pid = os.getpid()
@@ -416,8 +531,11 @@ def apply_update_windows(new_exe, exe_path=None):
         flags |= getattr(subprocess, name, 0)
     # 方案 1（首选）：让新下载的 exe 自己等旧进程退出后覆盖
     try:
-        subprocess.Popen([new_exe, "--install-update", "--old-exe", exe_path,
-                          "--old-pid", str(pid)], close_fds=True, creationflags=flags,
+        if old_dir:
+            args = [new_exe, "--install-update", "--old-dir", old_dir, "--old-pid", str(pid)]
+        else:
+            args = [new_exe, "--install-update", "--old-exe", exe_path, "--old-pid", str(pid)]
+        subprocess.Popen(args, close_fds=True, creationflags=flags,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         ulog("已启动新版自安装进程：%s" % new_exe)
         return "installer"
@@ -470,7 +588,7 @@ def cleanup_staged(keep=""):
     try:
         d = tempfile.gettempdir()
         for fn in os.listdir(d):
-            if not fn.startswith("DouyinDownloader-new"):
+            if not (fn.startswith("DouyinDownloader-new") or fn.startswith("DouyinDownloader-pkg")):
                 continue
             fp = os.path.join(d, fn)
             if keep and os.path.normcase(fp) == os.path.normcase(keep):

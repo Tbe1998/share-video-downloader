@@ -23,6 +23,8 @@ from urllib.parse import parse_qs, urlparse, quote
 import dycore
 import engine as eng
 
+import sessions
+
 try:                                   # 版本号唯一来源
     from version import VERSION as DEFAULT_APP_VERSION
 except Exception:                      # 独立运行时的兜底
@@ -285,6 +287,9 @@ a.big{display:block;text-align:center;background:#1f8fff;color:#fff;text-decorat
  <div class="sub" id="loginState" style="margin-bottom:8px;font-size:13px">登录状态：读取中…</div>
  <div class="row"><button class="ghost" id="btnLogin" style="flex:1">让电脑打开登录窗口</button>
  <button class="ghost" id="btnLoginCheck" style="flex:.7">刷新状态</button></div>
+ <button class="ghost" id="btnImport" style="margin-top:8px">导入桌面版登录态（粘贴 cookies.json）</button>
+ <textarea id="ck" class="hide" style="min-height:70px;margin-top:8px" placeholder='把电脑上 %APPDATA%\DouyinDownloader\cookies.json 的内容整段粘到这里'></textarea>
+ <button class="ghost hide" id="btnImportGo" style="margin-top:8px">确认导入</button>
  <div class="tip">想要 1080P/4K 才需要登录。点左边会在<b>电脑上</b>弹出抖音登录页，用手机抖音扫码即可，登录态存在电脑里。</div>
 </div>
 
@@ -402,6 +407,17 @@ $('btnLogin').onclick = async () => {
   alert(r.text + '\n在电脑屏幕上扫码，然后回来点『刷新状态』。');
   refreshLogin();
 };
+$('btnImport').onclick = () => {
+  $('ck').classList.toggle('hide'); $('btnImportGo').classList.toggle('hide');
+};
+$('btnImportGo').onclick = async () => {
+  const t = $('ck').value.trim();
+  if (!t) { alert('请先粘贴 cookies.json 的内容'); return; }
+  const r = await api('/api/cookies', {cookies: t});
+  if (!r.ok) { alert(r.error || '导入失败'); return; }
+  alert('已导入并注入 ' + r.saved + ' 个字段。\n是否真的登录，点『刷新状态』或直接解析一个视频试试。');
+  refreshLogin();
+};
 setTimeout(refreshLogin, 300);
 
 (async () => {
@@ -481,6 +497,10 @@ class Handler(BaseHTTPRequestHandler):
             if not data:
                 return self._send(404, b"", "image/jpeg")
             return self._send(200, data, "image/jpeg", {"Cache-Control": "max-age=3600"})
+        if p == "/api/cookies":
+            inf = sessions.info()
+            inf["masked"] = sessions.mask()
+            return self._json({"ok": True, "info": inf})
         if p == "/api/login":
             fn = self.hub.login_checker
             if not fn:
@@ -523,6 +543,29 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=do_download, args=(self.hub, jid, ratio, meta, body.get("quality") or "auto"),
                              daemon=True).start()
             return self._json({"ok": True, "job": jid})
+        if u.path == "/api/cookies":
+            raw = body.get("cookies") or body.get("text") or ""
+            try:
+                if isinstance(raw, str):
+                    raw = json.loads(raw)
+                if isinstance(raw, dict) and "cookies" in raw:
+                    raw = raw["cookies"]
+                n = sessions.save(raw, extra={"source": "web-import"})
+                if not n:
+                    return self._json({"ok": False, "error": "没识别到有效的登录字段（需要 sessionid 等）"})
+                hub = self.hub
+                try:
+                    e = hub.get_engine()
+                    e.set_cookies(sessions.load())
+                    st = e.login_status(want_nickname=False)
+                    logged = bool(st.get("logged_in"))
+                except Exception:
+                    logged = False
+                return self._json({"ok": True, "saved": n, "injected": True, "logged_in": logged,
+                                   "note": "已注入浏览器；抖音是否真的认这个登录态，以能不能解析/拿到高清为准",
+                                   "keys": sorted(sessions.load().keys())})
+            except Exception as ex:
+                return self._json({"ok": False, "error": "导入失败：%s" % ex})
         if u.path == "/api/login":
             fn = self.hub.login_opener
             if not fn:

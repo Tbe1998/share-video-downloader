@@ -22,6 +22,7 @@ import traceback
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+import sessions  # noqa: E402  （登录态 cookie 持久化）
 import updater   # noqa: E402  （自动更新模块，纯标准库）
 import webserver  # noqa: E402  （手机网页版，纯标准库）
 
@@ -347,6 +348,28 @@ def run_gui(test_hook=None):
                     own = True
                     e = eng.BrowserEngine(headless=True)
                 st = e.login_status()
+                if st.get("logged_in"):
+                    # 登录成功：把关键 cookie 存起来，下次直接复用
+                    try:
+                        saved = sessions.save(e.get_all_cookies(key_only=True), extra={"source": "browser"})
+                        st["saved_keys"] = saved
+                    except Exception as ex:
+                        st["save_error"] = str(ex)
+                else:
+                    # 没登录：如果本地存过 cookie，注入试试（换机器/清 profile 后能恢复）
+                    saved = sessions.load()
+                    if saved:
+                        try:
+                            n = e.set_cookies(saved)
+                            st2 = e.login_status()
+                            st2["restored"] = n
+                            st2["restored_keys"] = sorted(saved.keys())
+                            if st2.get("logged_in"):
+                                self.result.emit(st2)
+                                return
+                            st["tried_restore"] = n
+                        except Exception as ex:
+                            st["restore_error"] = str(ex)
                 self.result.emit(st)
             except Exception as ex:
                 self.fail.emit(str(ex))
@@ -424,6 +447,7 @@ def run_gui(test_hook=None):
             self.last_parse_error = ""
             self.fail_streak = int(CFG.get("fail_streak", 0) or 0)
             self._build()
+            self._refresh_cookie_hint()
             # 启动后自动查一次登录状态（放延迟，先让窗口画出来）
             QTimer.singleShot(1500, self.do_check_login)
             # 启动后静默检查更新（不打扰，只在日志里提示）
@@ -448,6 +472,12 @@ def run_gui(test_hook=None):
             self.lb_login = QLabel("登录状态：检测中…")
             self.lb_login.setObjectName("hint")
             head.addWidget(self.lb_login)
+            self.lb_cookie = QLabel("本地登录态：检查中…")
+            self.lb_cookie.setObjectName("hint")
+            self.lb_cookie.setCursor(Qt.PointingHandCursor)
+            self.lb_cookie.setToolTip("首次检测到登录后会自动保存 sessionid 等 cookie，之后启动直接复用。\n点这里可以清除已保存的登录态。")
+            self.lb_cookie.mousePressEvent = lambda ev: self.do_clear_saved_login()
+            head.addWidget(self.lb_cookie)
             self.btn_checklogin = QPushButton("检查登录")
             self.btn_checklogin.clicked.connect(self.do_check_login)
             head.addWidget(self.btn_checklogin)
@@ -739,12 +769,51 @@ def run_gui(test_hook=None):
                 "登录成功后不用关窗口，直接点本程序右上角的『检查登录』确认状态即可。\n"
                 "登录状态会保存在本程序独立的浏览器 profile 里，之后长期有效。")
             self.log("正在打开登录用浏览器 …")
+            self._login_poll_left = 60          # 5 分钟内每 5 秒自动查一次登录状态
             w = LoginWorker()
             w.log.connect(self.log)
             w.ready.connect(self._on_login_engine)
-            w.done.connect(lambda m: self.log(m))
+            w.done.connect(lambda m: (self.log(m), self._poll_login_after_scan()))
             w.start()
             self._login_worker = w
+
+        def _poll_login_after_scan(self):
+            """登录窗口开着时自动轮询登录状态，扫码成功即保存 cookie，无需手动点按钮"""
+            if self.lb_login.text().startswith("登录状态：已登录"):
+                return
+            left = getattr(self, "_login_poll_left", 0)
+            if left <= 0:
+                return
+            self._login_poll_left = left - 1
+            if self._check_worker and self._check_worker.isRunning():
+                QTimer.singleShot(5000, self._poll_login_after_scan)
+                return
+            self.do_check_login()
+            QTimer.singleShot(5000, self._poll_login_after_scan)
+
+        def do_clear_saved_login(self):
+            if QMessageBox.question(self, "清除保存的登录态",
+                                    "会删除本地保存的 cookies（%s）。\n"
+                                    "浏览器 profile 里的登录态不受影响。确定吗？" % sessions.store_path()) \
+                    != QMessageBox.Yes:
+                return
+            sessions.clear()
+            self.log("已清除本地保存的登录态")
+            self._refresh_cookie_hint()
+
+        def _refresh_cookie_hint(self):
+            """界面上提示本地是否存有登录态"""
+            try:
+                inf = sessions.info()
+                if inf.get("exists"):
+                    self.lb_cookie.setText("本地登录态：%s（%s，%s 天前）" % (
+                        "已保存 %d 项" % len(inf.get("keys") or []),
+                        "可复用" if inf.get("logged_in") else "不完整",
+                        inf.get("age_days")))
+                else:
+                    self.lb_cookie.setText("本地登录态：未保存（首次检测登录后会自动保存）")
+            except Exception:
+                pass
 
         def do_diagnose(self):
             if getattr(self, "_diag_worker", None) is not None and self._diag_worker.isRunning():
@@ -941,10 +1010,13 @@ def run_gui(test_hook=None):
             if self._upd_dl is not None and self._upd_dl.isRunning():
                 return
             exe = updater.current_exe()
-            dest = updater.staged_path(info.get("version") or "")
+            kind = info.get("kind") or "exe"
+            dest = (updater.staged_zip_path(info.get("version") or "") if kind == "package"
+                    else updater.staged_path(info.get("version") or ""))
             cands = info.get("candidates") or []
-            self.log("开始下载更新包（约 %.1f MB，可用下载源 %d 个）…"
-                     % ((info.get("size") or 0) / 1048576.0, len(cands)))
+            self.log("开始下载更新%s（约 %.1f MB，可用下载源 %d 个）…"
+                     % ("安装包" if kind == "package" else "包",
+                        (info.get("size") or 0) / 1048576.0, len(cands)))
             self.lb_status.setText("正在下载新版本 …")
             w = UpdateDownloadWorker(info, dest)
             w.trying.connect(lambda host: self.log("尝试下载源：%s" % host))
@@ -975,13 +1047,31 @@ def run_gui(test_hook=None):
             except Exception:
                 host = url[:40]
             self.log("更新包已就绪：%.1f MB，sha256 校验通过（来源 %s）" % (size / 1048576.0, host))
-            new_exe = updater.staged_path(info.get("version") or "")
-            if not os.path.exists(new_exe):
-                self.log("× 找不到已下载的更新包：%s" % new_exe)
-                QMessageBox.warning(self, "更新失败", "下载的更新包不见了，请重试。")
-                return
+            kind = info.get("kind") or "exe"
+            if kind == "package":
+                zip_path = updater.staged_zip_path(info.get("version") or "")
+                if not os.path.exists(zip_path):
+                    self.log("× 找不到已下载的安装包：%s" % zip_path)
+                    QMessageBox.warning(self, "更新失败", "下载的安装包不见了，请重试。")
+                    return
+                self.lb_status.setText("正在解压安装包 …")
+                try:
+                    new_exe, _tmp = updater.extract_package(zip_path)
+                except Exception as ex:
+                    self.log("解压失败：%s" % ex)
+                    QMessageBox.warning(self, "更新失败", "安装包解压失败：%s" % ex)
+                    return
+                self.log("安装包已解压：%s" % new_exe)
+                old_dir = os.path.dirname(updater.current_exe())
+            else:
+                new_exe = updater.staged_path(info.get("version") or "")
+                old_dir = None
+                if not os.path.exists(new_exe):
+                    self.log("× 找不到已下载的更新包：%s" % new_exe)
+                    QMessageBox.warning(self, "更新失败", "下载的更新包不见了，请重试。")
+                    return
             try:
-                mode = updater.apply_update_windows(new_exe)
+                mode = updater.apply_update_windows(new_exe, old_dir=old_dir)
             except Exception as ex:
                 self.log("启动更新脚本失败：%s" % ex)
                 QMessageBox.warning(self, "更新失败", "无法启动替换脚本：%s" % ex)
@@ -1040,10 +1130,18 @@ def run_gui(test_hook=None):
                 self.lb_login.setStyleSheet("color:#2fd07a;")
                 self.log("登录状态：已登录%s（检测到 %s）" % (
                     ("，昵称 " + nick) if nick else "", ", ".join(st.get("cookies") or [])))
+                if st.get("restored"):
+                    self.log("已用本地保存的登录态恢复（注入 %d 个 cookie），不用重新扫码" % st["restored"])
+                if st.get("saved_keys"):
+                    self.log("登录态已保存到本地：%s（共 %d 个字段），下次启动自动复用"
+                             % (sessions.store_path(), st["saved_keys"]))
             else:
                 text = "登录状态：未登录"
                 self.lb_login.setStyleSheet("color:#ffb020;")
                 self.log("登录状态：未登录（cookie 里没有 sessionid；点『登录抖音』扫码）")
+                if st.get("tried_restore"):
+                    self.log("本地存过登录态（%d 个 cookie），注入后仍未登录，可能已过期，请重新扫码"
+                             % st["tried_restore"])
             self.lb_login.setText(text)
 
         def closeEvent(self, ev):
@@ -1056,6 +1154,12 @@ def run_gui(test_hook=None):
                         w.wait(2500)
                 except Exception:
                     pass
+            try:
+                e = self.login_engine
+                if e is not None and e.is_alive():
+                    sessions.save(e.get_all_cookies(key_only=True), extra={"source": "exit"})
+            except Exception:
+                pass
             if getattr(self, "web", None) is not None:
                 try:
                     self.web.stop()
@@ -1271,15 +1375,19 @@ def main():
         pass
     if "--install-update" in argv:
         # 被 updater 调起来的新版本：等旧进程退出 → 覆盖旧 exe → 启动新版
-        old_exe, old_pid = "", 0
+        old_exe, old_dir, old_pid = "", "", 0
         for i, a in enumerate(argv):
             if a == "--old-exe" and i + 1 < len(argv):
                 old_exe = argv[i + 1]
+            if a == "--old-dir" and i + 1 < len(argv):
+                old_dir = argv[i + 1]
             if a == "--old-pid" and i + 1 < len(argv):
                 try:
                     old_pid = int(argv[i + 1])
                 except ValueError:
                     old_pid = 0
+        if old_dir:
+            sys.exit(updater.install_update_package(old_dir=old_dir, old_pid=old_pid, launch=True))
         sys.exit(updater.install_update(old_exe=old_exe, old_pid=old_pid, launch=True))
     if "--selftest" in argv or "--check" in argv:
         sys.exit(run_selftest())

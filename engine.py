@@ -484,6 +484,80 @@ class BrowserEngine:
         except Exception:
             return {}
 
+    # ---------- cookie 读写（登录态持久化用） ----------
+    def get_all_cookies(self, key_only=False):
+        """读出浏览器里的 cookie。key_only=True 时只返回关键登录字段（dict）"""
+        self.start()
+        cookies = []
+        for method in ("Network.getAllCookies", "Storage.getCookies"):
+            try:
+                res = self.sess.call(method)
+                cookies = res.get("cookies") or []
+                if cookies:
+                    break
+            except Exception:
+                continue
+        if key_only:
+            try:
+                import sessions
+                return sessions._norm(cookies)
+            except Exception:
+                return {}
+        return cookies
+
+    def set_cookies(self, cookie_map, url="https://www.douyin.com/"):
+        """把保存的 cookie 注入浏览器（换机器/清了 profile 后恢复登录）"""
+        self.start()
+        if not cookie_map:
+            return 0
+        try:                                   # 先落到抖音域，否则 domain 校验可能失败
+            self.goto(url, wait=1.2)
+        except Exception:
+            pass
+        items = []
+        for name, c in cookie_map.items():
+            if isinstance(c, dict):
+                item = dict(c)
+            else:
+                item = {"name": name, "value": str(c), "domain": ".douyin.com", "path": "/"}
+            if not item.get("value"):
+                continue
+            rec = {
+                "name": item.get("name") or name,
+                "value": item["value"],
+                "domain": item.get("domain") or ".douyin.com",
+                "path": item.get("path") or "/",
+                "secure": bool(item.get("secure")),
+                "httpOnly": bool(item.get("httpOnly")),
+            }
+            ss = item.get("sameSite")
+            if ss in ("Strict", "Lax", "None"):
+                rec["sameSite"] = ss
+            exp = item.get("expires")
+            try:
+                if exp and float(exp) > 0:
+                    rec["expires"] = float(exp)
+            except Exception:
+                pass
+            items.append(rec)
+        if not items:
+            return 0
+        try:
+            self.sess.call("Network.setCookies", {"cookies": items})
+        except Exception:
+            # 老接口兜底：逐个 setCookie
+            for rec in items:
+                try:
+                    self.sess.call("Network.setCookie", rec)
+                except Exception:
+                    pass
+        try:
+            self.sess.call("Page.reload", {"ignoreCache": True})
+            time.sleep(1.5)
+        except Exception:
+            pass
+        return len(items)
+
     # ---------- 登录状态 ----------
     def login_status(self, want_nickname=True):
         """用 CDP 读本 profile 的 cookie 判断是否已登录抖音"""
