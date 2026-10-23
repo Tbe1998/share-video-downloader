@@ -33,16 +33,19 @@ jobs:
       - name: 环境信息（写入任务摘要）
         shell: pwsh
         run: |
+          $py = ((python -V 2>&1) -join ' ').Trim()
+          $enc = ((python -c 'import sys; print(sys.stdout.encoding)' 2>&1) -join ' ').Trim()
           $s = $env:GITHUB_STEP_SUMMARY
-          Add-Content -Path $s -Value "## 抖音视频下载器 — Windows 打包"
-          Add-Content -Path $s -Value ""
-          Add-Content -Path $s -Value "| 项目 | 值 |"
-          Add-Content -Path $s -Value "| --- | --- |"
-          Add-Content -Path $s -Value "| 运行器 | ``windows-latest`` |"
-          Add-Content -Path $s -Value "| 提交 | ``$env:GITHUB_SHA`` |"
-          Add-Content -Path $s -Value "| Python | $((python -V 2>&1)) |"
-          Add-Content -Path $s -Value "| stdout 编码 | $((python -c \"import sys; print(sys.stdout.encoding)\" 2>&1)) |"
-          Add-Content -Path $s -Value ""
+          Add-Content -Path $s -Value '## 抖音视频下载器 — Windows 打包'
+          Add-Content -Path $s -Value ''
+          Add-Content -Path $s -Value '| 项目 | 值 |'
+          Add-Content -Path $s -Value '| --- | --- |'
+          Add-Content -Path $s -Value ('| 运行器 | windows-latest |')
+          Add-Content -Path $s -Value ('| 提交 | {0} |' -f $env:GITHUB_SHA)
+          Add-Content -Path $s -Value ('| Python | {0} |' -f $py)
+          Add-Content -Path $s -Value ('| stdout 编码 | {0} |' -f $enc)
+          Add-Content -Path $s -Value ''
+          Write-Host "python=$py enc=$enc"
 
       - name: 安装依赖（PySide6 + PyInstaller）
         shell: pwsh
@@ -155,8 +158,7 @@ jobs:
         run: |
           $exe = (Resolve-Path "dist/$env:APP_CN.exe" -ErrorAction Stop).Path
           Remove-Item douyin_selftest.txt -Force -ErrorAction SilentlyContinue
-          $p = Start-Process -FilePath $exe -ArgumentList @('--selftest') `
-                             -WorkingDirectory (Get-Location).Path -Wait -PassThru
+          $p = Start-Process -FilePath $exe -ArgumentList @('--selftest') -WorkingDirectory (Get-Location).Path -Wait -PassThru
           Write-Host "exe 退出码: $($p.ExitCode)"
           $deadline = (Get-Date).AddSeconds(20)
           while (-not (Test-Path 'douyin_selftest.txt' -PathType Leaf) -and (Get-Date) -lt $deadline) {
