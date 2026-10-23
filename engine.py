@@ -161,6 +161,9 @@ class BrowserEngine:
         self.proc = None
         self.sess = None
         self._lock_held = False
+        self._attached = False        # 是否是"接管"已有浏览器（不是自己启动的）
+        self._attached_ok = True
+        self._attached_check = 0.0
 
     # ---------- 进程 ----------
     def _acquire_profile(self):
@@ -178,12 +181,92 @@ class BrowserEngine:
                 pass
 
     def is_alive(self):
+        if self._attached:
+            now = time.time()
+            if now - self._attached_check < 2.0:
+                return self._attached_ok
+            self._attached_check = now
+            try:
+                _http("http://127.0.0.1:%d/json/version" % self.port, timeout=2)
+                self._attached_ok = True
+            except Exception:
+                self._attached_ok = False
+            return self._attached_ok
         return bool(self.proc) and self.proc.poll() is None and self.sess is not None
 
-    def start(self, timeout=25):
+    # ---------- 端口标记：接管上次没关干净的浏览器 ----------
+    def _marker_path(self):
+        return os.path.join(self.profile, "dy_engine.json")
+
+    def _write_marker(self):
+        try:
+            with open(self._marker_path(), "w", encoding="utf-8") as f:
+                json.dump({"port": self.port,
+                           "pid": self.proc.pid if self.proc else 0,
+                           "ts": int(time.time())}, f)
+        except Exception:
+            pass
+
+    def _read_marker(self):
+        try:
+            with open(self._marker_path(), "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def _clear_marker(self):
+        try:
+            os.remove(self._marker_path())
+        except Exception:
+            pass
+
+    def _try_attach(self):
+        """如果上次启动的浏览器（本程序的独立 profile）还活着，直接接管它"""
+        m = self._read_marker()
+        port = m.get("port")
+        if not port:
+            return False
+        try:
+            ver = json.loads(_http("http://127.0.0.1:%d/json/version" % port, timeout=3))
+        except Exception:
+            return False
+        self.port = port
+        self._browser_ws = ver.get("webSocketDebuggerUrl")
+        try:
+            self._connect_page()
+        except Exception:
+            return False
+        self._attached = True
+        self._attached_ok = True
+        self._attached_check = time.time()
+        return True
+
+    def start(self, timeout=45):
         if self.is_alive():
             return
+        if self._try_attach():
+            self.log("已接管上次仍在运行的浏览器（端口 %d）" % self.port)
+            return
         self._acquire_profile()
+        for attempt in (1, 2):
+            try:
+                self._launch(timeout)
+                self._write_marker()
+                return
+            except EngineError as e:
+                # 上一次留下的浏览器进程占着 profile → 干掉它再试一次
+                m = self._read_marker()
+                pid = m.get("pid")
+                if attempt == 1 and pid and _pid_alive(pid):
+                    self.log("发现上次残留的浏览器进程（PID %s），先结束它再启动" % pid)
+                    _kill_pid(pid)
+                    self._clear_marker()
+                    time.sleep(1.5)
+                    continue
+                self._release_profile()
+                raise
+
+    def _launch(self, timeout=45):
         args = [self.exe,
                 "--remote-debugging-port=%d" % self.port,
                 "--user-data-dir=%s" % self.profile,
@@ -204,16 +287,33 @@ class BrowserEngine:
             self._release_profile()
             raise
         t0 = time.time()
+        last_err = None
         while time.time() - t0 < timeout:
+            # 关键：浏览器进程如果已经退出（多半是 profile 被占用 / 被安全软件拦），
+            # 端口永远不会开，必须立刻报错并说清原因，而不是死等超时。
+            rc = self.proc.poll()
+            if rc is not None:
+                self.proc = None
+                raise EngineError(
+                    "浏览器启动后立刻退出（退出码 %s）。\n"
+                    "常见原因：① 上次的浏览器进程/窗口还占着同一个配置目录；\n"
+                    "② 杀毒软件拦截了本程序启动的浏览器；③ 浏览器被策略/Tamper Protection 限制。\n"
+                    "处理：关掉所有残留的 Edge/Chrome 窗口后重试，或点『诊断』看详细信息。" % rc)
             try:
-                ver = json.loads(_http("http://127.0.0.1:%d/json/version" % self.port))
+                ver = json.loads(_http("http://127.0.0.1:%d/json/version" % self.port, timeout=3))
                 self._browser_ws = ver.get("webSocketDebuggerUrl")
                 self._connect_page()
                 return
-            except Exception:
+            except Exception as e:
+                last_err = e
                 time.sleep(0.4)
         self.kill()
-        raise EngineError("浏览器启动超时（端口 %d）" % self.port)
+        raise EngineError(
+            "浏览器启动超时（端口 %d，已等待 %d 秒）。\n"
+            "端口一直没有响应，常见原因：① 防火墙/安全软件拦了本机回环端口；\n"
+            "② 浏览器进程卡在首启引导页；③ 机器较慢，首次启动确实要更久。\n"
+            "处理：重试一次，或点『诊断』查看端口与浏览器状态。最后错误：%s"
+            % (self.port, timeout, last_err))
 
     def _connect_page(self):
         # 复用已有页面 target，没有就新建
@@ -246,6 +346,11 @@ class BrowserEngine:
 
     def kill(self):
         self.close()
+        if self._attached:
+            # 接管来的浏览器是用户/上次留下的，别杀它，只断开连接
+            self._attached = False
+            self.sess = None
+            return
         if self.proc and self.proc.poll() is None:
             try:
                 self.proc.terminate()
@@ -255,6 +360,8 @@ class BrowserEngine:
                     self.proc.kill()
                 except Exception:
                     pass
+        if self.proc is not None:
+            self._clear_marker()
         self.proc = None
         self._release_profile()
 
@@ -454,6 +561,122 @@ def download_entry(entry, out_dir, meta, progress=None, should_stop=None):
 def _clean(s):
     s = re.sub(r'[\\/:*?"<>|\r\n\t]+', " ", s or "")
     return re.sub(r"\s+", " ", s).strip()
+
+
+def _pid_alive(pid):
+    try:
+        pid = int(pid)
+    except Exception:
+        return False
+    if pid <= 0:
+        return False
+    if sys.platform.startswith("win"):
+        try:
+            out = subprocess.run(["tasklist", "/FI", "PID eq %d" % pid, "/NH"],
+                                 capture_output=True, text=True, timeout=8,
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout or ""
+            return str(pid) in out
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
+def _kill_pid(pid):
+    try:
+        pid = int(pid)
+    except Exception:
+        return
+    try:
+        if sys.platform.startswith("win"):
+            subprocess.run(["taskkill", "/F", "/PID", str(pid)],
+                           capture_output=True, timeout=10,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        else:
+            os.kill(pid, 15)
+            for _ in range(10):
+                time.sleep(0.2)
+                try:
+                    os.kill(pid, 0)
+                except Exception:
+                    return
+            try:
+                os.kill(pid, 9)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def diagnose(log=print):
+    """逐项自检，返回报告行列表；用于界面上的『诊断』按钮。"""
+    lines = []
+
+    def say(s):
+        lines.append(s)
+        try:
+            log(s)
+        except Exception:
+            pass
+
+    say("===== 诊断开始 =====")
+    say("系统: %s  Python %s" % (sys.platform, sys.version.split()[0]))
+    try:
+        exe = find_browser()
+        say("浏览器: %s" % exe)
+        try:
+            out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=15,
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            say("浏览器版本: %s" % ((out.stdout or out.stderr or "").strip() or "(无输出)"))
+        except Exception as e:
+            say("浏览器版本读取失败: %s" % e)
+    except Exception as e:
+        say("× 没找到浏览器: %s" % e)
+        return lines
+    prof = profile_dir()
+    say("配置目录: %s" % prof)
+    say("可写: %s" % (os.access(prof, os.W_OK)))
+    marker = os.path.join(prof, "dy_engine.json")
+    if os.path.exists(marker):
+        try:
+            m = json.load(open(marker, "r", encoding="utf-8"))
+            alive = _pid_alive(m.get("pid"))
+            say("上次浏览器记录: 端口 %s / PID %s / 进程存活=%s" % (m.get("port"), m.get("pid"), alive))
+        except Exception as e:
+            say("上次浏览器记录读取失败: %s" % e)
+    else:
+        say("上次浏览器记录: 无")
+    try:
+        p = _free_port()
+        say("可用端口测试: OK（%d）" % p)
+    except Exception as e:
+        say("× 端口不可用: %s" % e)
+    e = BrowserEngine(headless=(True if (not sys.platform.startswith("win")
+                                         and not os.environ.get("DISPLAY")) else False))
+    say("启动测试（端口 %d，最多 45 秒）…" % e.port)
+    t0 = time.time()
+    try:
+        e.start()
+        say("√ 浏览器启动成功，耗时 %.2f 秒" % (time.time() - t0))
+        say("   调试端点: http://127.0.0.1:%d/json/version" % e.port)
+        try:
+            st = e.login_status(want_nickname=False)
+            say("   登录状态: %s（cookie: %s）" % ("已登录" if st["logged_in"] else "未登录",
+                                                ", ".join(st["cookies"]) or "无"))
+        except Exception as ex:
+            say("   登录状态检测失败: %s" % ex)
+    except Exception as ex:
+        say("× 浏览器启动失败（%.2f 秒后）: %s" % (time.time() - t0, ex))
+    finally:
+        try:
+            e.kill()
+        except Exception:
+            pass
+    say("===== 诊断结束 =====")
+    return lines
 
 
 def _free_port():

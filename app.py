@@ -23,7 +23,7 @@ sys.path.insert(0, HERE)
 
 APP_NAME = "DouyinDownloader"
 APP_TITLE = "抖音无水印下载器"
-VERSION = "2.2"
+VERSION = "2.3"
 
 # ---------------- 配置 ----------------
 def app_dir():
@@ -353,6 +353,18 @@ def run_gui(test_hook=None):
                     except Exception:
                         pass
 
+    class DiagnoseWorker(QThread):
+        log = Signal(str)
+        done = Signal()
+
+        def run(self):
+            try:
+                eng.diagnose(log=lambda s: self.log.emit(s))
+            except Exception as ex:
+                self.log.emit("诊断异常: %s" % ex)
+            finally:
+                self.done.emit()
+
     class Main(QMainWindow):
         def __init__(self):
             super().__init__()
@@ -396,6 +408,10 @@ def run_gui(test_hook=None):
             self.btn_login.setToolTip("遇到风控或想要 1080P/4K 时，扫码登录一次即可（登录状态会保存在独立浏览器 profile 里）")
             self.btn_login.clicked.connect(self.do_login)
             head.addWidget(self.btn_login)
+            self.btn_diag = QPushButton("诊断")
+            self.btn_diag.setToolTip("浏览器启动失败/超时时点这里，会把浏览器路径、端口、残留进程等检查一遍写进日志")
+            self.btn_diag.clicked.connect(self.do_diagnose)
+            head.addWidget(self.btn_diag)
             root.addLayout(head)
 
             g1 = QGroupBox("① 链接")
@@ -641,6 +657,17 @@ def run_gui(test_hook=None):
             w.start()
             self._login_worker = w
 
+        def do_diagnose(self):
+            if getattr(self, "_diag_worker", None) is not None and self._diag_worker.isRunning():
+                return
+            self.btn_diag.setEnabled(False)
+            self.log("开始诊断（约十几秒）…")
+            w = DiagnoseWorker()
+            w.log.connect(self.log)
+            w.done.connect(lambda: (self.btn_diag.setEnabled(True), self.log("诊断完成")))
+            w.start()
+            self._diag_worker = w
+
         def _on_login_engine(self, e):
             self.login_engine = e
 
@@ -677,7 +704,8 @@ def run_gui(test_hook=None):
 
         def closeEvent(self, ev):
             # 退出前收尾：等后台线程结束、关掉浏览器进程，避免残留
-            for w in (self.pw, self.dw, self._check_worker, getattr(self, "_login_worker", None)):
+            for w in (self.pw, self.dw, self._check_worker, getattr(self, "_login_worker", None),
+                      getattr(self, "_diag_worker", None)):
                 try:
                     if w is not None and w.isRunning():
                         w.wait(2500)
