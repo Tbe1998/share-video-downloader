@@ -14,7 +14,10 @@ import stat
 import sys
 import time
 
-APP_NAME = "DouyinDownloader"
+try:
+    from version import APP_DIR_NAME as APP_NAME, APP_DIR_NAME_OLD
+except Exception:
+    APP_NAME, APP_DIR_NAME_OLD = "ShareVideoDownloader", "ShareVideoDownloader"
 
 # 用户点名要保存的字段 + 抖音常见配套字段（有就一起存，没有就跳过）
 KEY_COOKIES = (
@@ -32,6 +35,13 @@ def data_dir():
     else:
         root = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
     d = os.path.join(root, APP_NAME)
+    old = os.path.join(root, APP_DIR_NAME_OLD)
+    try:
+        if not os.path.isdir(d) and os.path.isdir(old):      # 改名后自动继承旧配置
+            import shutil
+            shutil.copytree(old, d, dirs_exist_ok=True)
+    except Exception:
+        pass
     try:
         os.makedirs(d, exist_ok=True)
     except Exception:

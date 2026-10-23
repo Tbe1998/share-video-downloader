@@ -31,6 +31,8 @@ jobs:
           python -m pip install "PySide6==6.9.1"
           if ($LASTEXITCODE -ne 0) { python -m pip install PySide6 }
           python -m pip install qrcode
+          python -m pip install --upgrade yt-dlp
+          if ($LASTEXITCODE -ne 0) { python -m pip install yt-dlp }
           pyinstaller --version
           python -c "import PySide6, qrcode; print('deps ok')"
 
@@ -40,12 +42,13 @@ jobs:
           python -m py_compile app.py engine.py cdp.py dycore.py updater.py webserver.py webapp.py version.py sessions.py pack_onedir.py
           python -c "import sys; sys.path.insert(0,'.'); import app, engine, cdp, updater, webserver, webapp, version, sessions; print('imports OK', version.VERSION)"
           python -c "import qrcode; qr=qrcode.QRCode(border=2, box_size=1); qr.add_data('http://x'); qr.make(); print('qrcode OK', len(qr.get_matrix()))"
+          python -c "import yt_dlp, platforms; print('yt-dlp OK', yt_dlp.version.__version__, '| 多平台模块:', platforms.available())"
 
       - name: 打包桌面版（onedir 完整文件夹）
         shell: pwsh
         run: |
           $common = @(
-            '--noconfirm','--clean','--onedir','--windowed','--name','DouyinDownloader',
+            '--noconfirm','--clean','--onedir','--windowed','--name','ShareVideoDownloader',
             '--distpath','dist','--workpath','build','--specpath','build',
             '--exclude-module','tkinter',
             '--exclude-module','PySide6.QtWebEngineCore','--exclude-module','PySide6.QtWebEngineWidgets',
@@ -56,68 +59,73 @@ jobs:
             '--exclude-module','PySide6.QtSql','--exclude-module','PySide6.QtTest',
             '--exclude-module','PySide6.QtDesigner','--exclude-module','PySide6.QtUiTools',
             '--hidden-import','qrcode','--hidden-import','qrcode.util','--hidden-import','qrcode.constants',
+            '--collect-all','yt_dlp',
             'app.py'
           )
           & pyinstaller @common
           if ($LASTEXITCODE -ne 0) { Write-Host "桌面版打包失败"; exit 1 }
-          if (-not (Test-Path "dist/DouyinDownloader/DouyinDownloader.exe")) { Write-Host "没生成 exe"; exit 1 }
+          if (-not (Test-Path "dist/ShareVideoDownloader/ShareVideoDownloader.exe")) { Write-Host "没生成 exe"; exit 1 }
           Write-Host "桌面版 exe 与运行库："
-          Get-ChildItem dist/DouyinDownloader | Select-Object Name,Length | Format-Table
+          Get-ChildItem dist/ShareVideoDownloader | Select-Object Name,Length | Format-Table
 
       - name: 打包单文件 exe（兼容 v2.8 及更老版本的自动更新）
         shell: pwsh
         run: |
           $one = @(
-            '--noconfirm','--clean','--onefile','--windowed','--name','DouyinDownloaderLegacy',
+            '--noconfirm','--clean','--onefile','--windowed','--name','ShareVideoDownloaderLegacy',
             '--distpath','dist-legacy','--workpath','build-legacy','--specpath','build-legacy',
             '--exclude-module','tkinter',
             '--exclude-module','PySide6.QtWebEngineCore','--exclude-module','PySide6.QtWebEngineWidgets',
             '--exclude-module','PySide6.QtQuick','--exclude-module','PySide6.QtQml',
             '--exclude-module','PySide6.QtMultimedia','--exclude-module','PySide6.QtPdf',
             '--hidden-import','qrcode','--hidden-import','qrcode.util','--hidden-import','qrcode.constants',
+            '--collect-all','yt_dlp',
             'app.py'
           )
           & pyinstaller @one
           if ($LASTEXITCODE -ne 0) { Write-Host "单文件打包失败（不影响文件夹版，但老客户端会升不上来）" }
-          if (Test-Path "dist-legacy/DouyinDownloaderLegacy.exe") {
-            Copy-Item "dist-legacy/DouyinDownloaderLegacy.exe" "out_legacy_DouyinDownloader.exe" -Force
-            Write-Host "单文件 exe: $((Get-Item out_legacy_DouyinDownloader.exe).Length) 字节"
+          if (Test-Path "dist-legacy/ShareVideoDownloaderLegacy.exe") {
+            Copy-Item "dist-legacy/ShareVideoDownloaderLegacy.exe" "out_legacy_ShareVideoDownloader.exe" -Force
+            Write-Host "单文件 exe: $((Get-Item out_legacy_ShareVideoDownloader.exe).Length) 字节"
           }
 
       - name: 打包独立网页版（onedir，无 GUI 依赖）
         shell: pwsh
         run: |
           $web = @(
-            '--noconfirm','--clean','--onedir','--console','--name','DouyinWebServer',
+            '--noconfirm','--clean','--onedir','--console','--name','ShareVideoWeb',
             '--distpath','dist','--workpath','build','--specpath','build',
             '--exclude-module','tkinter','--exclude-module','PySide6',
+            '--collect-all','yt_dlp',
             'webapp.py'
           )
           & pyinstaller @web
           if ($LASTEXITCODE -ne 0) { Write-Host "网页版打包失败"; exit 1 }
-          if (-not (Test-Path "dist/DouyinWebServer/DouyinWebServer.exe")) { Write-Host "没生成网页版 exe"; exit 1 }
-          Get-ChildItem dist/DouyinWebServer | Select-Object Name,Length | Format-Table
+          if (-not (Test-Path "dist/ShareVideoWeb/ShareVideoWeb.exe")) { Write-Host "没生成网页版 exe"; exit 1 }
+          Get-ChildItem dist/ShareVideoWeb | Select-Object Name,Length | Format-Table
 
       - name: 打包后自检（桌面版 --selftest / 网页版 --help）
         shell: pwsh
         run: |
           Write-Host "=== 桌面版自检 ==="
           if (Test-Path douyin_selftest.txt) { Remove-Item douyin_selftest.txt }
-          $p = Start-Process -FilePath "dist/DouyinDownloader/DouyinDownloader.exe" -ArgumentList "--selftest" -Wait -PassThru
+          $p = Start-Process -FilePath "dist/ShareVideoDownloader/ShareVideoDownloader.exe" -ArgumentList "--selftest" -Wait -PassThru
           if (Test-Path douyin_selftest.txt) { Get-Content douyin_selftest.txt -Encoding UTF8 } else { Write-Host "（--windowed 没有 stdout，只能看自检文件）" }
           if ($p.ExitCode -ne 0) { Write-Host "自检退出码 $($p.ExitCode)"; exit 1 }
           if (-not (Test-Path douyin_selftest.txt)) { Write-Host "自检没产出 douyin_selftest.txt"; exit 1 }
           if (-not (Select-String -Path douyin_selftest.txt -Pattern "版本一致性 OK" -Quiet)) { Write-Host "版本一致性检查没通过"; exit 1 }
           Write-Host "=== 网页版参数检查 ==="
-          $w = Start-Process -FilePath "dist/DouyinWebServer/DouyinWebServer.exe" -ArgumentList "--help" -Wait -PassThru -NoNewWindow -RedirectStandardOutput webhelp.txt
+          $w = Start-Process -FilePath "dist/ShareVideoWeb/ShareVideoWeb.exe" -ArgumentList "--help" -Wait -PassThru -NoNewWindow -RedirectStandardOutput webhelp.txt
           Get-Content webhelp.txt | Select-Object -First 6
           if (-not (Select-String -Path webhelp.txt -Pattern "token" -Quiet)) { Write-Host "网页版 --help 异常"; exit 1 }
+          $ws = Start-Process -FilePath "dist/ShareVideoDownloader/ShareVideoDownloader.exe" -ArgumentList "--selftest" -Wait -PassThru
+          if (-not (Select-String -Path douyin_selftest.txt -Pattern "多平台支持" -Quiet)) { Write-Host "自检缺少多平台信息"; exit 1 }
 
       - name: 组装完整文件夹 zip
         shell: pwsh
         run: |
           python pack_onedir.py --dist dist --out out
-          if (Test-Path out_legacy_DouyinDownloader.exe) { Move-Item out_legacy_DouyinDownloader.exe out/DouyinDownloader.exe -Force }
+          if (Test-Path out_legacy_ShareVideoDownloader.exe) { Move-Item out_legacy_ShareVideoDownloader.exe out/ShareVideoDownloader.exe -Force }
           Get-ChildItem out | Select-Object Name,Length | Format-Table
 
       - name: 上传产物（两个文件夹 zip + 兼容用的单文件 exe）
@@ -126,5 +134,5 @@ jobs:
           name: douyin-onedir
           path: |
             out/*.zip
-            out/DouyinDownloader.exe
+            out/ShareVideoDownloader.exe
           if-no-files-found: error

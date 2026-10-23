@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""抖音无水印下载器 · 桌面版（PySide6）
+"""分享视频下载器 · 桌面版（PySide6）
 
 用法：
   双击 exe / python app.py            图形界面
@@ -26,9 +26,10 @@ import sessions  # noqa: E402  （登录态 cookie 持久化）
 import updater   # noqa: E402  （自动更新模块，纯标准库）
 import webserver  # noqa: E402  （手机网页版，纯标准库）
 
-APP_NAME = "DouyinDownloader"
-APP_TITLE = "抖音无水印下载器"
-from version import VERSION  # noqa: E402  唯一版本来源（见 version.py）
+from version import (VERSION, APP_TITLE, APP_DIR_NAME,  # noqa: E402  唯一命名/版本来源
+                     APP_DIR_NAME_OLD)
+
+APP_NAME = APP_DIR_NAME
 
 # ---------------- 配置 ----------------
 def _fix_stdout():
@@ -54,6 +55,13 @@ def app_dir():
     else:
         root = os.path.join(os.path.expanduser("~"), ".config")
     d = os.path.join(root, APP_NAME)
+    old = os.path.join(root, APP_DIR_NAME_OLD)
+    try:                                     # 改名后自动继承旧配置/登录态
+        if not os.path.isdir(d) and os.path.isdir(old):
+            import shutil
+            shutil.copytree(old, d, dirs_exist_ok=True)
+    except Exception:
+        pass
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -265,6 +273,15 @@ def run_gui(test_hook=None):
             e = None
             own = False
             try:
+                # 非抖音平台走 yt-dlp
+                import platforms as pf
+                if pf.detect(self.url) == "ytdlp":
+                    self.log.emit("识别为其它平台，用 yt-dlp 解析 …")
+                    res = pf.probe(self.url)
+                    m = res["meta"]
+                    self.log.emit("平台：%s ｜ 标题：%s" % (res.get("platform") or "其它", (m.get("desc") or "")[:40]))
+                    self.ok.emit({"meta": m, "ratios": res["ratios"], "mode": "ytdlp"})
+                    return
                 # 短链(v.douyin.com/xxx)里没有作品ID，必须先跟随跳转解析出来
                 import dycore
                 self.log.emit("解析分享链接：%s" % self.url)
@@ -314,11 +331,12 @@ def run_gui(test_hook=None):
         fail = Signal(str)
         log = Signal(str)
 
-        def __init__(self, ratio, out_dir, meta, headless):
+        def __init__(self, ratio, out_dir, meta, headless, url=""):
             super().__init__()
             self.ratio = ratio
             self.out_dir = out_dir
             self.meta = meta
+            self.url = url
             self._stop = False
 
         def stop(self):
@@ -326,6 +344,15 @@ def run_gui(test_hook=None):
 
         def run(self):
             try:
+                if (self.ratio or {}).get("engine") == "ytdlp":
+                    import platforms as pf
+                    self.log.emit("用 yt-dlp 下载（%s）…" % ((self.ratio or {}).get("gear") or ""))
+                    path = pf.download(self.url or (self.meta or {}).get("webpage") or "",
+                                       self.ratio, self.out_dir,
+                                       progress=lambda g, t, s: self.prog.emit(g, t, s),
+                                       should_stop=lambda: self._stop)
+                    self.done.emit(path)
+                    return
                 path = eng.download_entry(self.ratio, self.out_dir, self.meta,
                                           progress=lambda g, t, s: self.prog.emit(g, t, s),
                                           should_stop=lambda: self._stop)
@@ -460,6 +487,7 @@ def run_gui(test_hook=None):
             self._upd_check = None
             self._upd_dl = None
             self.web = None
+            self.src_url = ""
             self.login_request.connect(self.do_login)
             self.last_parse_error = ""
             self.fail_streak = int(CFG.get("fail_streak", 0) or 0)
@@ -481,7 +509,7 @@ def run_gui(test_hook=None):
             head = QHBoxLayout()
             tbox = QVBoxLayout()
             t = QLabel(APP_TITLE); t.setObjectName("title")
-            s = QLabel("粘贴抖音分享链接 → 解析 → 选择清晰度 → 下载")
+            s = QLabel("粘贴视频链接（抖音 / B站 / 快手 / 小红书 / 微博 / X / TikTok …）→ 解析 → 选清晰度 → 下载")
             s.setObjectName("sub")
             tbox.addWidget(t); tbox.addWidget(s)
             head.addLayout(tbox)
@@ -523,7 +551,7 @@ def run_gui(test_hook=None):
             l1 = QVBoxLayout(g1)
             row = QHBoxLayout()
             self.ed_url = QLineEdit()
-            self.ed_url.setPlaceholderText("粘贴抖音分享链接或整段分享文字（自动提取链接）")
+            self.ed_url.setPlaceholderText("粘贴视频链接或整段分享文字（自动提取链接），支持抖音、B站、快手、小红书、微博、X、TikTok 等")
             self.ed_url.returnPressed.connect(self.do_parse)
             row.addWidget(self.ed_url, 1)
             b_paste = QPushButton("粘贴")
@@ -644,13 +672,14 @@ def run_gui(test_hook=None):
         def do_parse(self):
             text = self.ed_url.text()
             if not text.strip():
-                QMessageBox.information(self, "提示", "请先粘贴抖音分享链接")
+                QMessageBox.information(self, "提示", "请先粘贴视频链接")
                 return
             url = extract_url(text)
-            if "douyin.com" not in url and not re.search(r"\d{15,20}", url):
+            # 多平台：只要求是个 http(s) 链接，平台由 platforms.detect 判断
+            if not re.match(r"^https?://", url):
                 QMessageBox.warning(self, "链接不对",
-                                    "这看起来不是抖音链接。\n请复制抖音作品里的『分享 → 复制链接』，"
-                                    "形如 https://v.douyin.com/xxxxxxx/")
+                                    "没从内容里找到视频链接。\n请复制平台的『分享 → 复制链接』，"
+                                    "或用浏览器打开视频页后复制地址栏。")
                 return
             if self.pw and self.pw.isRunning():
                 return
@@ -658,7 +687,8 @@ def run_gui(test_hook=None):
             self.btn_dl.setEnabled(False)
             self.pb.setValue(0)
             self.lb_status.setText("解析中…")
-            self.lb_info.setText("正在解析分享链接（短链需要先跳转取出作品ID）…")
+            self.lb_info.setText("正在解析链接 …")
+            self.src_url = url
             self.pw = ParseWorker(url, headless=True, reuse_engine=self.login_engine)
             self.pw.log.connect(self.log)
             self.pw.ok.connect(self.on_parsed)
@@ -744,7 +774,7 @@ def run_gui(test_hook=None):
             self.lb_status.setText("开始下载 %s …" % qlabel)
             self.log("开始下载：%s  体积约 %s" % (qlabel,
                                              dycore.human_size(pick.get("size") or 0)))
-            self.dw = DownloadWorker(pick, out_dir, self.meta, True)
+            self.dw = DownloadWorker(pick, out_dir, self.meta, True, url=getattr(self, "src_url", ""))
             self.dw.prog.connect(self.on_prog)
             self.dw.done.connect(self.on_done)
             self.dw.fail.connect(self.on_dl_fail)
@@ -1102,7 +1132,7 @@ def run_gui(test_hook=None):
         # ---------- 失效反馈 ----------
         def do_copy_diag(self):
             lines = [
-                "== 抖音下载器诊断信息 ==",
+                "== 分享视频下载器 诊断信息 ==",
                 "版本: v%s" % VERSION,
                 "系统: %s   Python %s" % (sys.platform, sys.version.split()[0]),
                 "程序路径: %s" % updater.current_exe(),
@@ -1225,7 +1255,7 @@ def run_gui(test_hook=None):
     app.setStyleSheet(STYLE)
     w = Main()
     w.show()
-    w.log("就绪。把抖音分享链接粘到上面的输入框，点『解析』。")
+    w.log("就绪。把视频链接粘到上面的输入框，点『解析』。")
     if test_hook is not None:
         test_hook(app, w)
     try:
@@ -1285,7 +1315,7 @@ def run_selftest():
         except Exception:
             pass
 
-    say("== 抖音下载器自检 ==")
+    say("== 分享视频下载器 自检 ==")
     say("Python:", sys.version.split()[0], sys.platform)
     try:
         import PySide6
@@ -1306,6 +1336,15 @@ def run_selftest():
         say("浏览器:", eng.find_browser())
     except Exception as e:
         say("未找到浏览器（不影响 exe 完整性，运行时需要 Edge/Chrome）:", e)
+    try:
+        import platforms
+        say("多平台支持（yt-dlp %s）：%s" % (platforms.version() or "未内置",
+                                            "可用" if platforms.available() else "不可用"))
+        if not platforms.available():
+            ok = False
+    except Exception as e:
+        ok = False
+        say("多平台模块失败:", e)
     try:
         import updater
         say("自动更新模块 OK（可自更新: %s）" % updater.can_self_update())

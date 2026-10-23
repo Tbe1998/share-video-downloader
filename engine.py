@@ -112,6 +112,10 @@ NICK_JS = r"""
 """
 
 
+def _js_str(s):
+    return json.dumps(s)
+
+
 def _br_of(url):
     m = re.search(r"[?&]br=(\d+)", url or "")
     return int(m.group(1)) if m else 0
@@ -146,7 +150,7 @@ def profile_dir(base=None):
         root = os.environ.get("APPDATA") or os.path.expanduser("~")
     else:
         root = os.path.join(os.path.expanduser("~"), ".local", "share")
-    d = os.path.join(root, "DouyinDownloader", "browser-profile")
+    d = os.path.join(root, "ShareVideoDownloader", "browser-profile")
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -483,6 +487,55 @@ class BrowserEngine:
             return json.loads(raw) if raw else {}
         except Exception:
             return {}
+
+    # ---------- 截图（网页版扫码登录用） ----------
+    def screenshot_png(self, selector=None, max_width=520):
+        """截当前页面（或指定元素）成 PNG 字节。selector 命中就用元素区域。"""
+        params = {"format": "png", "captureBeyondViewport": False}
+        if selector:
+            try:
+                js = ("""(() => { const el = document.querySelector(%s);
+                       if (!el) return '';
+                       const r = el.getBoundingClientRect();
+                       if (r.width < 40 || r.height < 40) return '';
+                       return JSON.stringify({x: Math.max(0, r.x), y: Math.max(0, r.y),
+                                              width: r.width, height: r.height, scale: 1});
+                     })()""" % _js_str(selector))
+                raw = self.sess.evaluate(js)
+                if raw:
+                    clip = json.loads(raw)
+                    clip["scale"] = 1
+                    params["clip"] = clip
+            except Exception:
+                params.pop("clip", None)
+        res = self.sess.call("Page.captureScreenshot", params)
+        import base64
+        data = base64.b64decode(res.get("data") or "")
+        return data
+
+    def click_text(self, texts, timeout=8):
+        """按可见文字点元素（抖音登录按钮之类没有稳定属性时用）"""
+        js = ("""(() => { const ts = %s;
+                   const els = Array.from(document.querySelectorAll('button,[role="button"],div,span,a'));
+                   for (const t of ts) {
+                     for (const el of els) {
+                       const s = (el.innerText || '').trim();
+                       if (s === t || (s.length <= 6 && s.includes(t) && el.offsetParent !== null)) {
+                         try { el.click(); return t; } catch (e) {}
+                       }
+                     }
+                   }
+                   return ''; })()""" % json.dumps(list(texts), ensure_ascii=False))
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            try:
+                r = self.sess.evaluate(js)
+                if r:
+                    return r
+            except Exception:
+                pass
+            time.sleep(0.5)
+        return ""
 
     # ---------- cookie 读写（登录态持久化用） ----------
     def get_all_cookies(self, key_only=False):

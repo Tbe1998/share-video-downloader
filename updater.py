@@ -24,8 +24,8 @@ import urllib.request
 try:                                    # 仓库名唯一来源
     from version import REPO
 except Exception:
-    REPO = "Tbe1998/douyin-downloader"
-UA = "DouyinDownloader-Updater"
+    REPO = "Tbe1998/share-video-downloader"
+UA = "ShareVideoDownloader-Updater"
 GH_API_LATEST = "https://api.github.com/repos/%s/releases/latest" % REPO
 GH_RELEASES = "https://github.com/%s/releases/latest" % REPO
 
@@ -268,7 +268,7 @@ def can_self_update():
 
 def staged_path(version=""):
     """更新包下载到哪：临时目录（不污染安装目录，也不需要管理员权限）"""
-    name = "DouyinDownloader-new"
+    name = "ShareVideoDownloader-new"
     if version:
         name += "-v" + str(version).lstrip("vV")
     return os.path.join(tempfile.gettempdir(), name + ".exe")
@@ -276,7 +276,7 @@ def staged_path(version=""):
 
 def log_path():
     base = os.environ.get("APPDATA") or tempfile.gettempdir()
-    return os.path.join(base, "DouyinDownloader", "update.log")
+    return os.path.join(base, "ShareVideoDownloader", "update.log")
 
 
 def ulog(msg):
@@ -425,7 +425,7 @@ def install_update(old_exe=None, old_pid=0, launch=True):
 
 
 def staged_zip_path(version=""):
-    name = "DouyinDownloader-pkg"
+    name = "ShareVideoDownloader-pkg"
     if version:
         name += "-v" + str(version).lstrip("vV")
     return os.path.join(tempfile.gettempdir(), name + ".zip")
@@ -468,7 +468,7 @@ def install_update_package(old_dir=None, old_pid=0, launch=True):
     ulog("旧进程已退出")
     if not os.path.isdir(os.path.join(old_dir, "_internal")):
         # 旧版本是单文件 exe：整包装到子文件夹，避免把 _internal 撒在桌面/根目录
-        sub = os.path.join(old_dir, "抖音视频下载器")
+        sub = os.path.join(old_dir, "分享视频下载器")
         ulog("检测到旧版是单文件 exe，改为安装到子目录：%s" % sub)
         try:
             os.makedirs(sub, exist_ok=True)
@@ -588,7 +588,7 @@ def cleanup_staged(keep=""):
     try:
         d = tempfile.gettempdir()
         for fn in os.listdir(d):
-            if not (fn.startswith("DouyinDownloader-new") or fn.startswith("DouyinDownloader-pkg")):
+            if not (fn.startswith("ShareVideoDownloader-new") or fn.startswith("ShareVideoDownloader-pkg")):
                 continue
             fp = os.path.join(d, fn)
             if keep and os.path.normcase(fp) == os.path.normcase(keep):

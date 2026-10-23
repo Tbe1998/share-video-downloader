@@ -1,11 +1,11 @@
 @echo off
 chcp 65001 >nul
 setlocal
-title 打包 抖音无水印下载器.exe
+title 打包 分享视频下载器.exe
 cd /d "%~dp0"
 
 echo ============================================================
-echo   抖音无水印下载器 - 一键打包成 Windows exe
+echo   分享视频下载器 - 一键打包成 Windows exe
 echo   需要: 已安装 Python 3.10+（安装时勾选 Add Python to PATH）
 echo ============================================================
 echo.
@@ -35,7 +35,7 @@ if errorlevel 1 (
 
 echo [3/4] 开始打包（约 2-5 分钟，请勿关闭窗口）...
 ".buildenv\Scripts\python.exe" -m PyInstaller --noconfirm --clean --onefile --windowed ^
-  --name "DouyinDownloader" ^
+  --name "ShareVideoDownloader" ^
   --distpath dist --workpath build --specpath build ^
   --collect-submodules PySide6 ^
   --exclude-module PySide6.QtWebEngineCore --exclude-module PySide6.QtWebEngineWidgets ^
@@ -46,13 +46,13 @@ echo [3/4] 开始打包（约 2-5 分钟，请勿关闭窗口）...
 if errorlevel 1 (echo [错误] 打包失败，请把本窗口截图发给助手 & pause & exit /b 1)
 
 echo [4/4] 改名并收尾...
-if exist "dist\DouyinDownloader.exe" (
-  copy /y "dist\DouyinDownloader.exe" "抖音视频下载器.exe" >nul
-  del /q "dist\DouyinDownloader.exe" 2>nul
+if exist "dist\ShareVideoDownloader.exe" (
+  copy /y "dist\ShareVideoDownloader.exe" "分享视频下载器.exe" >nul
+  del /q "dist\ShareVideoDownloader.exe" 2>nul
   echo.
   echo ============================================================
   echo   打包成功！生成的程序是:
-  echo     %~dp0抖音视频下载器.exe
+  echo     %~dp0分享视频下载器.exe
   echo   直接双击它即可运行，不需要装 Python。
   echo ============================================================
 ) else (

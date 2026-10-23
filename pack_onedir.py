@@ -3,12 +3,12 @@
 """把 PyInstaller 的 onedir 产物组装成“完整文件夹 + zip”（桌面版 + 独立网页版）。
 
 onedir 目录结构（PyInstaller 6）：
-  dist/DouyinDownloader/DouyinDownloader.exe
-  dist/DouyinDownloader/_internal/...        ← 所有运行库
+  dist/ShareVideoDownloader/ShareVideoDownloader.exe
+  dist/ShareVideoDownloader/_internal/...        ← 所有运行库
 
 输出：
-  out/抖音视频下载器-v<ver>.zip      内部目录 抖音视频下载器/（exe 已改中文名）
-  out/抖音网页版服务-v<ver>.zip      内部目录 抖音网页版服务/
+  out/分享视频下载器-v<ver>.zip      内部目录 分享视频下载器/（exe 已改中文名）
+  out/分享视频网页版-v<ver>.zip      内部目录 分享视频网页版/
   另外把解压后的文件夹也留在 out/ 下，方便本机验证
 """
 import argparse
@@ -20,20 +20,27 @@ import zipfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+try:
+    import version as vmod
+    EXE_D, EXE_W = vmod.EXE_NAME, vmod.EXE_NAME_WEB
+    NAME_D, NAME_W = vmod.APP_TITLE, vmod.APP_TITLE_WEB
+except Exception:
+    EXE_D, EXE_W, NAME_D, NAME_W = "ShareVideoDownloader", "ShareVideoWeb", "分享视频下载器", "分享视频网页版"
+
 DESKTOP = {
-    "src": "DouyinDownloader",
-    "exe": "DouyinDownloader.exe",
-    "name": "抖音视频下载器",
-    "readme": """抖音无水印下载器 · 使用说明
+    "src": EXE_D,
+    "exe": EXE_D + ".exe",
+    "name": NAME_D,
+    "readme": """分享视频下载器 · 使用说明
 
 【怎么用】
-双击 抖音视频下载器.exe。把抖音分享链接或整段分享文字粘到输入框，点「解析」，
+双击 分享视频下载器.exe。把抖音分享链接或整段分享文字粘到输入框，点「解析」，
 选清晰度后点「下载」即可。文件默认存到你的下载目录（可改）。
 
 【登录（可选，想要 1080P/4K 才需要）】
 点右上角「登录抖音」→ 在弹出的浏览器窗口里用抖音 App 扫码。
 首次检测到登录后，程序会自动把 sessionid 等登录 cookie 保存到
-%APPDATA%\\DouyinDownloader\\cookies.json，之后启动直接复用，不用再扫码。
+%APPDATA%\\ShareVideoDownloader\\cookies.json，之后启动直接复用，不用再扫码。
 
 【手机也能用】
 点「手机网页版」会显示二维码，手机连同一个 WiFi 扫码即可使用；
@@ -46,32 +53,32 @@ DESKTOP = {
 【出问题了】
 1. 连不上/解析失败：先点「检查更新」，可能新版已经修好了
 2. 浏览器启动失败/超时：点「诊断」，把日志发给助手
-3. 更新出问题：%APPDATA%\\DouyinDownloader\\update.log
+3. 更新出问题：%APPDATA%\\ShareVideoDownloader\\update.log
 """,
 }
 
 WEB = {
-    "src": "DouyinWebServer",
-    "exe": "DouyinWebServer.exe",
-    "name": "抖音网页版服务",
-    "readme": """抖音网页版服务 · 独立版（不依赖桌面版）
+    "src": EXE_W,
+    "exe": EXE_W + ".exe",
+    "name": NAME_W,
+    "readme": """分享视频网页版 · 独立版（不依赖桌面版）
 
 【怎么用】
-1. 双击 抖音网页版服务.exe（会弹一个黑窗口，别关它）
+1. 双击 分享视频网页版.exe（会弹一个黑窗口，别关它）
 2. 窗口里会显示手机访问地址，形如 http://192.168.x.x:8990/?k=xxxxxx
 3. 手机连同一个 WiFi，浏览器打开这个地址即可用
 
 固定端口/口令（手机收藏夹地址就不变了）：
-  抖音网页版服务.exe --port 8990 --token 你的口令 --out D:\\视频
+  分享视频网页版.exe --port 8990 --token 你的口令 --out D:\\视频
 
 【登录（想要 1080P/4K 才需要）】
 两种方式：
-  A. 在桌面版里登录一次，然后把 %APPDATA%\\DouyinDownloader\\cookies.json 的内容
+  A. 在桌面版里登录一次，然后把 %APPDATA%\\ShareVideoDownloader\\cookies.json 的内容
      粘到手机页面的「导入桌面版登录态」里
   B. 程序会在启动时自动读取上面那个 cookies.json 并注入
 
 【开机自启】
-把 抖音网页版服务.exe 的快捷方式放进：
+把 分享视频网页版.exe 的快捷方式放进：
   Win+R 输入 shell:startup 打开的文件夹
 """,
 }

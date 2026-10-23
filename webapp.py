@@ -71,7 +71,7 @@ def inject_saved_login(hub, log):
 
 def main():
     _fix_stdout()
-    ap = argparse.ArgumentParser(description="抖音无水印下载器 · 独立手机网页版")
+    ap = argparse.ArgumentParser(description="分享视频下载器 · 独立手机网页版")
     ap.add_argument("--port", type=int, default=int(os.environ.get("DY_PORT", 8990)))
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--out", default=os.environ.get("DY_OUT") or default_out(), help="下载保存目录")
@@ -90,7 +90,7 @@ def main():
     url = srv.start()
     print("", flush=True)
     print("=" * 62, flush=True)
-    print(" 抖音无水印下载器 · 手机网页版 v%s" % VERSION, flush=True)
+    print(" 分享视频下载器 · 手机网页版 v%s" % VERSION, flush=True)
     print("=" * 62, flush=True)
     for u in srv.urls():
         print("  " + u, flush=True)

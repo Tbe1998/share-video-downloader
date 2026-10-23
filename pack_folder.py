@@ -3,8 +3,8 @@
 """把打包产物组装成"完整文件夹"并打成 zip，便于分发（也作为 Release 资产）。
 
 文件夹结构：
-  抖音视频下载器/
-    抖音视频下载器.exe
+  分享视频下载器/
+    分享视频下载器.exe
     使用说明.txt
     版本信息.txt
 """
@@ -13,13 +13,13 @@ import shutil
 import sys
 import zipfile
 
-APP_DIR_NAME = "抖音视频下载器"
-EXE_NAME = "抖音视频下载器.exe"
+APP_DIR_NAME = "分享视频下载器"
+EXE_NAME = "分享视频下载器.exe"
 
-README = """抖音无水印下载器 v{ver}
+README = """分享视频下载器 v{ver}
 
 【怎么用】
-1. 双击「抖音视频下载器.exe」。
+1. 双击「分享视频下载器.exe」。
 2. 把抖音作品的分享链接（或整段分享文字）粘到输入框，点「解析」。
 3. 选清晰度，点「下载」。完成后可播放、打开所在文件夹。
 
@@ -48,7 +48,7 @@ https://www.topbei.cn/download/douyin/
 【它不做什么】
 只支持视频作品，图文/图集不支持。请只下载你有权保存的内容。
 
-程序配置与浏览器登录态保存在：%APPDATA%\\DouyinDownloader（更新 exe 不会影响它）。
+程序配置与浏览器登录态保存在：%APPDATA%\\ShareVideoDownloader（更新 exe 不会影响它）。
 """
 
 

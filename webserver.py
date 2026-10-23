@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, urlparse, quote
 
 import dycore
 import engine as eng
+import platforms
 
 import sessions
 
@@ -87,6 +88,8 @@ class Hub:
         self.jobs = {}
         self.covers = {}
         self.fail_streak = 0
+        self.login_lock = threading.Lock()
+        self.login_state = {"shot": b"", "ts": 0, "kind": "", "msg": "", "nickname": ""}
 
     # ---------- 引擎 ----------
     def get_engine(self):
@@ -154,7 +157,16 @@ class Hub:
 # ---------------- 业务：解析 / 下载 ----------------
 def do_parse(hub, jid, url):
     try:
-        hub.update(jid, msg="解析分享链接 …")
+        hub.update(jid, msg="解析链接 …", url=url)
+        if platforms.detect(url) == "ytdlp":
+            hub.update(jid, msg="识别为其它平台，正在用 yt-dlp 解析 …")
+            res = platforms.probe(url)
+            meta = res["meta"]
+            hub.update(jid, state="done", msg="解析完成（%s）" % res.get("platform", "其它平台"),
+                       meta=meta, ratios=res["ratios"], mode="ytdlp",
+                       platform=res.get("platform", ""))
+            hub.log("网页版解析成功（yt-dlp）：%s" % (meta.get("desc") or "")[:40])
+            return
         aweme_id = dycore.DouyinClient().resolve_id(url)
         hub.log("网页版解析：%s → %s" % (url, aweme_id))
         hub.update(jid, msg="打开作品页并等待浏览器完成签名 …", aweme_id=aweme_id)
@@ -188,8 +200,23 @@ def do_parse(hub, jid, url):
         hub.log("网页版解析失败：%s" % ex)
 
 
-def do_download(hub, jid, ratio, meta, quality):
+def do_download(hub, jid, ratio, meta, quality, url="", job=None):
     try:
+        ratio = ratio if isinstance(ratio, dict) else (ratio or [{}])[0]
+        if ratio.get("engine") == "ytdlp" or (job or {}).get("mode") == "ytdlp":
+            src = url or (job or {}).get("url") or meta.get("webpage") or ""
+            if not src:
+                raise RuntimeError("缺少原始链接，请重新解析")
+            hub.update(jid, msg="开始下载（yt-dlp）…")
+
+            def prog2(got, total, speed):
+                hub.update(jid, progress=got, total=total, speed=speed)
+            path = platforms.download(src, ratio, hub.out_dir, progress=prog2)
+            hub.update(jid, state="done", path=path, name=os.path.basename(path),
+                       progress=os.path.getsize(path), total=os.path.getsize(path),
+                       msg="下载完成", height=ratio.get("height") or 0)
+            hub.log("网页版下载完成（yt-dlp）：%s" % path)
+            return
         pick = eng.choose([ratio] if isinstance(ratio, dict) else ratio, quality)
         if not pick:
             raise eng.EngineError("找不到可下载的清晰度")
@@ -212,6 +239,56 @@ def do_download(hub, jid, ratio, meta, quality):
         hub.log("网页版下载失败：%s" % ex)
 
 
+# ---------------- 网页扫码登录（独立于桌面端） ----------------
+LOGIN_SHOT_SELECTORS = [
+    '[data-e2e="login-modal"]',
+    '.login-modal-container',
+    '#login-panel-new',
+    '[class*="login-container"]',
+    '[class*="login-modal"]',
+]
+
+
+def _login_capture(hub, log=None):
+    """打开抖音登录弹窗并截图；返回 (png, kind, msg)"""
+    e = hub.get_engine()
+    e.goto("https://www.douyin.com/", wait=3.0)
+    e.click_text(["登录", "立即登录", "登录/注册"], timeout=6)
+    time.sleep(3.0)
+    # 是否弹了滑块验证
+    try:
+        probe = e.sess.evaluate(
+            """(() => { const t = document.body ? document.body.innerText : '';
+                   if (t.indexOf('请完成下列验证') >= 0 || t.indexOf('拖动') >= 0) return 'captcha';
+                   if (document.querySelector('canvas') || document.querySelector('[class*="qrcode"], [class*="qr-code"]')) return 'qr';
+                   return ''; })()""") or ""
+    except Exception:
+        probe = ""
+    png = b""
+    for sel in LOGIN_SHOT_SELECTORS:
+        data = e.screenshot_png(selector=sel)
+        if data and len(data) > 6000:
+            png = data
+            break
+    if not png:
+        png = e.screenshot_png()
+    if probe == "captcha":
+        msg = ("抖音要求先过滑块验证（机房/自动化环境常见）。两种办法："
+               "① 在你自己电脑的桌面版里扫码登录一次，再把 cookies.json 粘到下面导入；"
+               "② 稍后点「刷新二维码」重试。")
+        kind = "captcha"
+    elif probe == "qr":
+        msg = "请用抖音 App 扫码（二维码约 1 分钟过期，过期点刷新）"
+        kind = "qr"
+    else:
+        msg = "已打开抖音登录页，请在下方图片里扫码；若没看到二维码点「刷新二维码」"
+        kind = "unknown"
+    hub.login_state.update({"shot": png, "ts": time.time(), "kind": kind, "msg": msg})
+    if log:
+        log("网页登录：%s（%d 字节截图）" % (kind, len(png)))
+    return png, kind, msg
+
+
 # ---------------- 网页 ----------------
 PAGE = r"""<!doctype html>
 <html lang="zh-CN"><head>
@@ -219,7 +296,7 @@ PAGE = r"""<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0f131b">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>抖音无水印下载器 · 手机版</title>
+<title>分享视频下载器 · 手机版</title>
 <style>
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 body{margin:0;padding:14px 14px 40px;background:#0f131b;color:#e8edf7;
@@ -254,10 +331,10 @@ a.big{display:block;text-align:center;background:#1f8fff;color:#fff;text-decorat
 .err{color:#ff6b81}
 .tip{color:#8b95a9;font-size:12.5px;line-height:1.6;margin-top:6px}
 </style></head><body>
-<h1><span class="dot"></span>抖音无水印下载器<span class="sub" id="ver"></span></h1>
+<h1><span class="dot"></span>分享视频下载器<span class="sub" id="ver"></span></h1>
 
 <div class="card">
- <textarea id="url" placeholder="粘贴抖音分享链接或整段分享文字&#10;例如：https://v.douyin.com/xxxxxx/"></textarea>
+ <textarea id="url" placeholder="粘贴视频链接或整段分享文字&#10;支持：抖音 / B站 / 快手 / 小红书 / 微博 / X / TikTok 等&#10;例如：https://v.douyin.com/xxxxxx/ 或 https://www.bilibili.com/video/BVxxxx"></textarea>
  <div class="row"><button id="btnPaste" class="ghost" style="flex:.42">粘贴</button>
  <button id="btnParse" style="flex:1.2">解析</button></div>
 </div>
@@ -285,17 +362,22 @@ a.big{display:block;text-align:center;background:#1f8fff;color:#fff;text-decorat
 
 <div class="card">
  <div class="sub" id="loginState" style="margin-bottom:8px;font-size:13px">登录状态：读取中…</div>
- <div class="row"><button class="ghost" id="btnLogin" style="flex:1">让电脑打开登录窗口</button>
- <button class="ghost" id="btnLoginCheck" style="flex:.7">刷新状态</button></div>
+ <div class="row"><button class="ghost" id="btnLogin" style="flex:1.15">网页扫码登录抖音</button>
+ <button class="ghost" id="btnLoginCheck" style="flex:.62">刷新状态</button></div>
+ <div id="qrBox" class="hide" style="margin-top:10px;text-align:center">
+   <img id="qrImg" style="max-width:100%;border-radius:10px;background:#fff">
+   <div class="tip" id="qrMsg"></div>
+   <button class="ghost" id="btnQrRefresh" style="margin-top:8px">刷新二维码</button>
+ </div>
  <button class="ghost" id="btnImport" style="margin-top:8px">导入桌面版登录态（粘贴 cookies.json）</button>
- <textarea id="ck" class="hide" style="min-height:70px;margin-top:8px" placeholder='把电脑上 %APPDATA%\DouyinDownloader\cookies.json 的内容整段粘到这里'></textarea>
+ <textarea id="ck" class="hide" style="min-height:70px;margin-top:8px" placeholder='把电脑上 %APPDATA%\ShareVideoDownloader\cookies.json 的内容整段粘到这里'></textarea>
  <button class="ghost hide" id="btnImportGo" style="margin-top:8px">确认导入</button>
  <div class="tip">想要 1080P/4K 才需要登录。点左边会在<b>电脑上</b>弹出抖音登录页，用手机抖音扫码即可，登录态存在电脑里。</div>
 </div>
 
 <div class="card">
- <div class="sub">同一个 WiFi 下打开这个地址就能用；解析和下载都在电脑上完成，登录态用的是电脑上的抖音登录。</div>
- <div class="tip">电脑端功能齐全（含『登录抖音』『检查登录』『诊断』）；这里出问题请到电脑上看日志。</div>
+ <div class="sub">解析和下载都在运行本服务的那台机器上完成；登录态保存在服务端，手机刷新页面也不用重新登录。</div>
+ <div class="tip">支持抖音（浏览器签名，可拿 1080P/4K）以及 B站/快手/小红书/微博/X/TikTok 等 yt-dlp 覆盖的站点。</div>
 </div>
 
 <script>
@@ -401,12 +483,29 @@ async function refreshLogin(){
   } catch(e){ $('loginState').textContent = '登录状态：读取失败'; }
 }
 $('btnLoginCheck').onclick = refreshLogin;
-$('btnLogin').onclick = async () => {
-  const r = await api('/api/login', {});
-  if (!r.ok) { alert(r.error || '无法打开登录窗口'); return; }
-  alert(r.text + '\n在电脑屏幕上扫码，然后回来点『刷新状态』。');
-  refreshLogin();
-};
+let qrTimer = null;
+async function startWebLogin(){
+  $('qrBox').classList.remove('hide');
+  $('qrMsg').textContent = '正在打开抖音登录页 …（约 10 秒）';
+  $('qrImg').removeAttribute('src');
+  const r = await api('/api/douyin/login/start', {});
+  if (!r.ok) { $('qrMsg').textContent = r.error || '打开失败'; return; }
+  $('qrMsg').textContent = r.msg || '';
+  $('qrImg').src = '/api/douyin/login/qr?ts=' + Date.now() + '&k=' + encodeURIComponent(K);
+  clearInterval(qrTimer);
+  qrTimer = setInterval(pollWebLogin, 3000);
+}
+async function pollWebLogin(){
+  const r = await api('/api/douyin/login/status');
+  if (r.ok && r.logged_in) {
+    clearInterval(qrTimer); qrTimer = null;
+    $('qrBox').classList.add('hide');
+    $('loginState').textContent = '登录状态：已登录' + (r.nickname ? '（' + r.nickname + '）' : '') + '，已保存 ' + r.saved + ' 项';
+    alert('登录成功' + (r.nickname ? '：' + r.nickname : '') + '\n登录态已保存，之后自动复用。');
+  }
+}
+$('btnQrRefresh').onclick = startWebLogin;
+$('btnLogin').onclick = startWebLogin;
 $('btnImport').onclick = () => {
   $('ck').classList.toggle('hide'); $('btnImportGo').classList.toggle('hide');
 };
@@ -501,6 +600,28 @@ class Handler(BaseHTTPRequestHandler):
             inf = sessions.info()
             inf["masked"] = sessions.mask()
             return self._json({"ok": True, "info": inf})
+        if p == "/api/douyin/login/qr":
+            data = self.hub.login_state.get("shot") or b""
+            if not data:
+                return self._send(404, b"", "image/png")
+            return self._send(200, data, "image/png", {"Cache-Control": "no-store"})
+        if p == "/api/douyin/login/state":
+            st = self.hub.login_state
+            return self._json({"ok": True, "kind": st.get("kind"), "msg": st.get("msg"),
+                               "ts": st.get("ts"), "has_shot": bool(st.get("shot"))})
+        if p == "/api/douyin/login/status":
+            try:
+                e = self.hub.get_engine()
+                st = e.login_status(want_nickname=True)
+                saved = 0
+                if st.get("logged_in"):
+                    saved = sessions.save(e.get_all_cookies(key_only=True), extra={"source": "web-login"})
+                    self.hub.login_state["nickname"] = st.get("nickname") or ""
+                return self._json({"ok": True, "logged_in": bool(st.get("logged_in")),
+                                   "nickname": st.get("nickname") or "", "saved": saved,
+                                   "cookies": st.get("cookies") or []})
+            except Exception as ex:
+                return self._json({"ok": False, "error": str(ex)})
         if p == "/api/login":
             fn = self.hub.login_checker
             if not fn:
@@ -539,10 +660,22 @@ class Handler(BaseHTTPRequestHandler):
             meta = body.get("meta") or {}
             if not ratio:
                 return self._json({"ok": False, "error": "缺少清晰度信息"}, 400)
+            src_job = self.hub.job(body.get("job") or "") or {}
             jid = self.hub.new_job("download")
-            threading.Thread(target=do_download, args=(self.hub, jid, ratio, meta, body.get("quality") or "auto"),
+            threading.Thread(target=do_download,
+                             args=(self.hub, jid, ratio, meta, body.get("quality") or "auto"),
+                             kwargs={"url": body.get("url") or src_job.get("url") or "",
+                                     "job": src_job},
                              daemon=True).start()
             return self._json({"ok": True, "job": jid})
+        if u.path == "/api/douyin/login/start":
+            with self.hub.login_lock:
+                try:
+                    png, kind, msg = _login_capture(self.hub, self.hub.log)
+                    return self._json({"ok": True, "kind": kind, "msg": msg, "bytes": len(png),
+                                       "ts": time.time()})
+                except Exception as ex:
+                    return self._json({"ok": False, "error": "打开登录页失败：%s" % ex})
         if u.path == "/api/cookies":
             raw = body.get("cookies") or body.get("text") or ""
             try:

@@ -35,7 +35,7 @@ def main():
     # 1) 页面 + ping
     with urllib.request.urlopen(base_root, timeout=20) as r:
         html = r.read().decode()
-    print("1) 首页 %d 字节, 标题存在=%s" % (len(html), "抖音无水印下载器" in html))
+    print("1) 首页 %d 字节, 标题存在=%s" % (len(html), "分享视频下载器" in html))
     print("   ping:", api(base_url("api/ping"))[1])
 
     # 2) 解析
