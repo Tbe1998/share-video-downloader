@@ -100,6 +100,25 @@ def _fix_stdout():
             pass
 
 
+def strip_tells(folder):
+    """清掉一眼就能看出“这是 Python 打包的”的残留文件"""
+    import glob
+    removed = 0
+    pats = ["**/__pycache__", "**/*.pyi", "**/*.pdb", "**/*.py", "**/*.pyc",
+            "**/*.dist-info", "**/*.egg-info", "**/README*", "**/LICENSE*"]
+    for pat in pats:
+        for path in glob.glob(os.path.join(folder, pat), recursive=True):
+            try:
+                if os.path.isdir(path):
+                    shutil.rmtree(path, ignore_errors=True)
+                else:
+                    os.remove(path)
+                removed += 1
+            except Exception:
+                pass
+    return removed
+
+
 def copytree(src, dst):
     if os.path.isdir(dst):
         shutil.rmtree(dst, ignore_errors=True)
@@ -113,6 +132,8 @@ def assemble(dist, out, ver, spec):
         raise SystemExit("找不到打包产物：%s" % exe_src)
     folder = os.path.join(out, spec["name"])
     copytree(src_dir, folder)
+    n = strip_tells(folder)
+    print("清理识别特征：%d 处（__pycache__ / dist-info / .pyi / .py）" % n)
     # 把 exe 改成中文名（内容不变，_internal 仍然在旁边）
     cn_exe = os.path.join(folder, spec["name"] + ".exe")
     if os.path.abspath(cn_exe) != os.path.abspath(os.path.join(folder, spec["exe"])):

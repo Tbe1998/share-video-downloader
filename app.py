@@ -49,6 +49,26 @@ def _fix_stdout():
             pass
 
 
+def resource_path(rel):
+    """打包后资源在 _internal 里（PyInstaller 6），开发时在脚本目录"""
+    base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
+    for cand in (os.path.join(base, rel), os.path.join(base, "runtime", rel),
+                 os.path.join(base, "_internal", rel),
+                 os.path.join(os.path.dirname(os.path.abspath(__file__)), rel)):
+        if os.path.exists(cand):
+            return cand
+    return ""
+
+
+def app_icon():
+    """窗口/任务栏图标"""
+    for name in ("assets/app.ico", "assets/app.png"):
+        p = resource_path(name)
+        if p:
+            return p
+    return ""
+
+
 def app_dir():
     if sys.platform.startswith("win"):
         root = os.environ.get("APPDATA") or os.path.expanduser("~")
@@ -474,6 +494,14 @@ def run_gui(test_hook=None):
         def __init__(self):
             super().__init__()
             self.setWindowTitle("%s v%s" % (APP_TITLE, VERSION))
+            try:
+                from PySide6.QtGui import QIcon
+                ip = app_icon()
+                if ip:
+                    self.setWindowIcon(QIcon(ip))
+                    QApplication.setWindowIcon(QIcon(ip))
+            except Exception:
+                pass
             self.resize(940, 720)
             self.meta = None
             self.ratios = []

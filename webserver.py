@@ -12,6 +12,7 @@
 """
 import json
 import os
+import sys
 import re
 import socket
 import threading
@@ -41,6 +42,21 @@ QUALITY_LABELS = [
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
+
+
+def _asset(name):
+    """读 assets 目录里的资源（打包后在 _internal/assets）"""
+    base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
+    for cand in (os.path.join(base, "assets", name), os.path.join(base, "runtime", "assets", name),
+                 os.path.join(base, "_internal", "assets", name),
+                 os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", name)):
+        if os.path.exists(cand):
+            try:
+                with open(cand, "rb") as f:
+                    return f.read()
+            except Exception:
+                return b""
+    return b""
 
 
 def lan_ip():
@@ -295,6 +311,8 @@ PAGE = r"""<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0f131b">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="/icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>分享视频下载器 · 手机版</title>
 <style>
@@ -576,6 +594,12 @@ class Handler(BaseHTTPRequestHandler):
         p = u.path
         if p in ("/", "/index.html"):
             return self._send(200, PAGE, "text/html; charset=utf-8")
+        if p in ("/favicon.ico", "/icon.png"):
+            data = _asset("app.ico" if p.endswith(".ico") else "app.png")
+            if data:
+                ctype = "image/x-icon" if p.endswith(".ico") else "image/png"
+                return self._send(200, data, ctype, {"Cache-Control": "max-age=86400"})
+            return self._send(404, b"", "image/x-icon")
         if not self._auth(q):
             return self._json({"ok": False, "error": "口令不对，请用电脑上显示的完整地址打开"}, 403)
         if p == "/api/ping":

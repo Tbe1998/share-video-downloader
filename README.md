@@ -76,6 +76,42 @@ CI 同时产出三样：
 | `分享视频网页版-vX.Y.zip` | 独立网页版完整文件夹 |
 | `ShareVideoDownloader.exe` | 单文件 exe（仅给老版本升级过渡用） |
 
+## 打包形态 / 隐藏 Python 痕迹
+
+默认发布是 PyInstaller 的 onedir 完整文件夹。目录结构：
+
+```
+分享视频下载器/
+├─ 分享视频下载器.exe
+├─ runtime/            ← 运行库（已由 --contents-directory 改名，不再是 PyInstaller 默认的 _internal）
+├─ assets/             ← 图标
+├─ 使用说明.txt
+└─ 版本信息.txt
+```
+
+`pack_onedir.py` 还会清掉 `__pycache__`、`*.dist-info`、`*.pyi`、`*.py`、`.pdb`
+等一眼能看出是 Python 打包的残留。
+
+**但要说实话**：`runtime/` 里仍然有 `python312.dll`、`PYZ-*.pyz` 这类文件，
+懂行的人还是能认出来。彻底消除需要换编译方式：
+
+| 方案 | 目录里能否看出 Python | 代价 |
+|---|---|---|
+| PyInstaller onedir（当前） | 能看到 `python3xx.dll` | 无，构建快、体积小、更新利落 |
+| PyInstaller `--onefile` | 发布物只有一个 exe，解开后才看得到 | 启动慢（每次自解压），杀软误报增多 |
+| **Nuitka 编译**（推荐要真隐藏时用） | 编译成 C 再链接，单文件里没有 `.pyc`，也没有独立 dll | 构建 20–40 分钟、体积略大、个别动态导入要 `--include-package` |
+| 加壳（VMProtect / Themida / EnigmaVB） | 基本看不到 | 商业授权、杀软误报高、调试困难 |
+
+Nuitka 路线已经准备好：`.github/workflows/build-nuitka.yml`（手动触发，
+产出单文件原生 `ShareVideoDownloader.exe`），本地也可用：
+
+```
+pip install nuitka ordered-set zstandard
+python -m nuitka --standalone --onefile --enable-plugin=pyside6 ^
+  --windows-console-mode=disable --include-package=yt_dlp --include-package=qrcode ^
+  --include-data-dir=assets=assets --windows-icon-from-ico=assets/app.ico app.py
+```
+
 ## 自动更新
 
 点右上角「检查更新」→ 查镜像里的 `latest.json` → 下载整包 zip → 校验 sha256 → 解压 →

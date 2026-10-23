@@ -1,0 +1,64 @@
+name: build-nuitka
+
+# 可选：用 Nuitka 把程序编译成原生二进制（单文件，目录里看不到 Python 痕迹）
+# 需要更"不像 Python"的发布形态时手动跑这个工作流。
+# PyInstaller 的 onedir 版仍然保留为常规发布形态（更新更快、体积更小）。
+on:
+  workflow_dispatch:
+
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  nuitka:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装依赖
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "PySide6==6.9.1" qrcode yt-dlp
+          python -m pip install nuitka ordered-set zstandard
+
+      - name: Nuitka 编译（单文件原生 exe）
+        shell: pwsh
+        run: |
+          python -m nuitka `
+            --standalone --onefile `
+            --enable-plugin=pyside6 `
+            --windows-console-mode=disable `
+            --include-package=yt_dlp `
+            --include-package=qrcode `
+            --include-data-dir=assets=assets `
+            --windows-icon-from-ico=assets/app.ico `
+            --assume-yes-for-downloads `
+            --company-name="Share Video" `
+            --product-name="Share Video Downloader" `
+            --file-version=3.1.0.0 --product-version=3.1.0.0 `
+            --output-filename=ShareVideoDownloader.exe `
+            --output-dir=nuitka-out `
+            app.py
+          if ($LASTEXITCODE -ne 0) { Write-Host "Nuitka 编译失败"; exit 1 }
+          Get-ChildItem nuitka-out | Select-Object Name,Length | Format-Table
+
+      - name: 自检（编译产物能否跑起来）
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "nuitka-out/ShareVideoDownloader.exe" -ArgumentList "--selftest" -Wait -PassThru
+          if (Test-Path douyin_selftest.txt) { Get-Content douyin_selftest.txt -Encoding UTF8 }
+          if ($p.ExitCode -ne 0) { Write-Host "自检退出码 $($p.ExitCode)"; exit 1 }
+
+      - name: 上传
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuitka-native
+          path: nuitka-out/ShareVideoDownloader.exe
+          if-no-files-found: error

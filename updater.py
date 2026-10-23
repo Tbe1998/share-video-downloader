@@ -466,7 +466,8 @@ def install_update_package(old_dir=None, old_pid=0, launch=True):
         _msgbox("更新失败", "旧版程序没有退出，更新已中止。请关掉程序后重试。")
         return 4
     ulog("旧进程已退出")
-    if not os.path.isdir(os.path.join(old_dir, "_internal")):
+    has_contents = any(os.path.isdir(os.path.join(old_dir, d)) for d in ("runtime", "_internal"))
+    if not has_contents:
         # 旧版本是单文件 exe：整包装到子文件夹，避免把 _internal 撒在桌面/根目录
         sub = os.path.join(old_dir, "分享视频下载器")
         ulog("检测到旧版是单文件 exe，改为安装到子目录：%s" % sub)
